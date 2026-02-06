@@ -1,5 +1,8 @@
 # 轻网盘 Light Cloud Disk
 
+[![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
+[![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
+
 基于 Kratos v2 的云存储服务，用于学习微服务架构和面试展示。
 
 ## 技术栈
@@ -135,6 +138,7 @@ make test
 
 - [分块上传实现](docs/chunk-upload.md)
 - [消息队列使用场景](docs/message-queue.md)
+- [CI/CD 配置](docs/ci-cd.md)
 
 ## 更新日志
 
