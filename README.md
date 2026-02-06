@@ -139,6 +139,7 @@ make test
 - [分块上传实现](docs/chunk-upload.md)
 - [消息队列使用场景](docs/message-queue.md)
 - [CI/CD 配置](docs/ci-cd.md)
+- [容器化部署](docs/containerization.md)
 
 ## 更新日志
 

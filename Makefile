@@ -66,6 +66,53 @@ run-file:
 .PHONY: all
 all: api conf generate build
 
+# Container runtime detection (prefer podman)
+CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+COMPOSE_RUNTIME := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null)
+
+# Container image build
+.PHONY: image-user
+image-user:
+	$(CONTAINER_RUNTIME) build --build-arg SERVICE=user --build-arg VERSION=$(VERSION) -t light-cloud-disk/user-service:$(VERSION) .
+
+.PHONY: image-file
+image-file:
+	$(CONTAINER_RUNTIME) build --build-arg SERVICE=file --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-service:$(VERSION) .
+
+.PHONY: images
+images: image-user image-file
+
+# Compose commands
+.PHONY: up
+up:
+	$(COMPOSE_RUNTIME) up -d
+
+.PHONY: down
+down:
+	$(COMPOSE_RUNTIME) down
+
+.PHONY: logs
+logs:
+	$(COMPOSE_RUNTIME) logs -f
+
+.PHONY: ps
+ps:
+	$(COMPOSE_RUNTIME) ps
+
+# Infrastructure only (for local development)
+.PHONY: infra-up
+infra-up:
+	$(COMPOSE_RUNTIME) up -d mysql redis kafka
+
+.PHONY: infra-down
+infra-down:
+	$(COMPOSE_RUNTIME) down mysql redis kafka
+
+# Clean containers and volumes
+.PHONY: clean-containers
+clean-containers:
+	$(COMPOSE_RUNTIME) down -v --remove-orphans
+
 help:
 	@echo ''
 	@echo 'Usage:'

@@ -1,0 +1,37 @@
+# Build artifacts
+bin/
+dist/
+
+# Dependencies
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# Test files
+*_test.go
+coverage.out
+
+# Temp files
+tmp/
+store/
+*.log
+
+# Environment
+.env
+.env.*
+
+# CI/CD
+.github/

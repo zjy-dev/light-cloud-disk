@@ -1,0 +1,138 @@
+# Podman/Docker Compose 配置
+# 使用: podman-compose up -d 或 docker-compose up -d
+
+services:
+  mysql:
+    image: docker.io/library/mysql:8.0
+    container_name: cloud-disk-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root123}
+      MYSQL_DATABASE: ${DB_NAME:-cloud_disk}
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cloud-disk
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: cloud-disk-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cloud-disk
+
+  kafka:
+    image: docker.io/bitnami/kafka:3.6
+    container_name: cloud-disk-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - cloud-disk
+
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: user
+        VERSION: ${VERSION:-dev}
+    image: light-cloud-disk/user-service:${VERSION:-latest}
+    container_name: cloud-disk-user
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root123}
+      DB_NAME: ${DB_NAME:-cloud_disk}
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret}
+    ports:
+      - "8000:8000"
+      - "9000:9000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cloud-disk
+
+  file-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: file
+        VERSION: ${VERSION:-dev}
+    image: light-cloud-disk/file-service:${VERSION:-latest}
+    container_name: cloud-disk-file
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root123}
+      DB_NAME: ${DB_NAME:-cloud_disk}
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: kafka:9092
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_BUCKET_NAME: ${OSS_BUCKET_NAME:-}
+    ports:
+      - "8001:8000"
+      - "9001:9000"
+    volumes:
+      - file_storage:/app/store
+      - file_tmp:/app/tmp
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - cloud-disk
+
+volumes:
+  mysql_data:
+  redis_data:
+  kafka_data:
+  file_storage:
+  file_tmp:
+
+networks:
+  cloud-disk:
+    driver: bridge
