@@ -1,0 +1,34 @@
+syntax = "proto3";
+package kratos.api;
+
+option go_package = "github.com/J-Y-Zhang/light-cloud-disk/app/user/internal/conf;conf";
+
+import "google/protobuf/duration.proto";
+
+message Bootstrap {
+  Server server = 1;
+  Data data = 2;
+}
+
+message Server {
+  message GRPC {
+    string network = 1;
+    string addr = 2;
+    google.protobuf.Duration timeout = 3;
+  }
+  GRPC grpc = 1;
+}
+
+message Data {
+  message Database {
+    string driver = 1;
+    int32 max_idle_conns = 2;
+    int32 max_open_conns = 3;
+    google.protobuf.Duration conn_max_lifetime = 4;
+  }
+  Database database = 1;
+}
+
+message Registry {
+  string address = 1;
+}

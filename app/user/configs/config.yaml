@@ -1,0 +1,11 @@
+server:
+  grpc:
+    addr: 0.0.0.0:9001
+    timeout: 10s
+
+data:
+  database:
+    driver: mysql
+    max_idle_conns: 10
+    max_open_conns: 100
+    conn_max_lifetime: 3600s

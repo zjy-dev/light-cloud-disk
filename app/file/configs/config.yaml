@@ -1,0 +1,19 @@
+server:
+  grpc:
+    addr: 0.0.0.0:9002
+    timeout: 10s
+
+data:
+  database:
+    driver: mysql
+    max_idle_conns: 10
+    max_open_conns: 100
+    conn_max_lifetime: 3600s
+  redis:
+    read_timeout: 0.2s
+    write_timeout: 0.2s
+
+upload:
+  chunk_size: 5242880  # 5MB
+  temp_dir: ./tmp
+  store_dir: ./store

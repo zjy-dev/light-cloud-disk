@@ -1,78 +1,89 @@
 # 容器化部署
 
-本项目优先支持 Podman，同时兼容 Docker。
+本项目支持 Docker Compose 和 Podman Compose。
 
-## 容器运行时
+## 服务组成
 
-| 运行时 | 优先级 | 说明 |
-|--------|--------|------|
-| Podman | 一等公民 | 无守护进程，rootless，更安全 |
-| Docker | 兼容 | 完全兼容 |
+| 服务 | 镜像 | 端口 | 说明 |
+|------|------|------|------|
+| consul | hashicorp/consul:1.19 | 8500 (UI+API) | 服务注册与发现 |
+| mysql | mysql:8.0 | 3306 | 主数据库 |
+| redis | redis:7-alpine | 6379 | 分块上传状态缓存 |
+| kafka | bitnami/kafka:3.6 | 9092 | 消息队列 (预留) |
+| user-service | 自构建 | 9001 (gRPC) | 用户服务 |
+| file-service | 自构建 | 9002 (gRPC) | 文件服务 |
+| gateway | 自构建 | 8080 (HTTP) | API 网关 |
 
-## 快速开始
-
-### 使用 Podman
+## 快速启动
 
 ```bash
 # 启动所有服务
-podman-compose up -d
+docker-compose up -d   # 或 podman-compose up -d
 
 # 仅启动基础设施 (本地开发)
-podman-compose up -d mysql redis kafka
+docker-compose up -d consul mysql redis kafka
 
 # 查看日志
-podman-compose logs -f
+docker-compose logs -f gateway user-service file-service
 
-# 停止服务
-podman-compose down
-```
-
-### 使用 Docker
-
-```bash
-# 启动所有服务
-docker-compose up -d
-
-# 查看状态
-docker-compose ps
-
-# 停止并清理
-docker-compose down -v
+# 停止
+docker-compose down
 ```
 
 ## Makefile 命令
 
-Makefile 自动检测容器运行时（优先 Podman）：
-
 ```bash
-make images        # 构建所有镜像
-make image-user    # 构建用户服务镜像
-make image-file    # 构建文件服务镜像
+make image-user       # 构建用户服务镜像
+make image-file       # 构建文件服务镜像
+make image-gateway    # 构建网关镜像
 
-make up            # 启动所有服务
-make down          # 停止所有服务
-make logs          # 查看日志
-make ps            # 查看状态
+make infra-up         # 启动基础设施 (MySQL + Redis + Consul + Kafka)
+make infra-down       # 停止基础设施
 
-make infra-up      # 仅启动基础设施 (MySQL, Redis, Kafka)
-make infra-down    # 停止基础设施
-
-make clean-containers  # 清理容器和卷
+make run-user         # 本地运行用户服务
+make run-file         # 本地运行文件服务
+make run-gateway      # 本地运行网关
 ```
 
-## 服务端口
+## Dockerfile
 
-| 服务 | HTTP | gRPC |
-|------|------|------|
-| user-service | 8000 | 9000 |
-| file-service | 8001 | 9001 |
-| MySQL | 3306 | - |
-| Redis | 6379 | - |
-| Kafka | 9092 | - |
+多阶段构建，通过 `SERVICE` 构建参数指定服务：
+
+```dockerfile
+# 构建阶段
+FROM golang:1.25-alpine AS builder
+ARG SERVICE
+COPY . .
+RUN go build -o /app/server ./app/${SERVICE}/cmd
+
+# 运行阶段
+FROM alpine:3.21
+COPY --from=builder /app/server /app/server
+COPY app/${SERVICE}/configs/ /app/configs/
+CMD ["/app/server", "-conf", "/app/configs/"]
+```
+
+特点：
+- `CGO_ENABLED=0` 静态编译，无外部依赖
+- 最终镜像约 20MB
+- 支持通过 `--build-arg SERVICE=user|file|gateway` 构建不同服务
+
+## 启动顺序
+
+```
+Consul → MySQL → Redis → Kafka
+    ↓        ↓       ↓
+ user-service (等待 MySQL + Consul healthy)
+ file-service (等待 MySQL + Redis + Consul healthy)
+    ↓
+ gateway (等待 Consul + user-service + file-service started)
+```
+
+docker-compose.yml 使用 `depends_on` + `condition` 控制启动顺序。
 
 ## 环境变量
 
-通过 `.env` 文件配置：
+通过 `.env` 文件或直接设置环境变量：
 
 ```bash
 # 数据库
@@ -89,22 +100,8 @@ OSS_ACCESS_KEY_SECRET=your_secret
 OSS_BUCKET_NAME=your_bucket
 
 # 版本
-VERSION=v2.0.0
+VERSION=v3.0.0
 ```
-
-## Dockerfile 说明
-
-使用多阶段构建，最终镜像约 20MB：
-
-```dockerfile
-# 构建阶段: golang:1.22-alpine
-# 运行阶段: alpine:3.19
-```
-
-特点：
-- `CGO_ENABLED=0` 静态编译
-- 使用 `docker.io/library/` 前缀确保 Podman 兼容
-- 支持通过 `--build-arg` 指定服务和版本
 
 ## 本地开发模式
 
@@ -112,45 +109,23 @@ VERSION=v2.0.0
 # 1. 启动基础设施
 make infra-up
 
-# 2. 本地运行服务 (热重载)
-make run-user
-make run-file
+# 2. 等待 Consul UI 可用: http://localhost:8500
 
-# 3. 开发完成后停止
-make infra-down
-```
+# 3. 在不同终端启动三个服务
+make run-user      # 终端 1
+make run-file      # 终端 2
+make run-gateway   # 终端 3
 
-## 生产部署
-
-```bash
-# 1. 设置环境变量
-cp .env.example .env
-vim .env
-
-# 2. 构建镜像
-VERSION=v2.0.0 make images
-
-# 3. 启动服务
-VERSION=v2.0.0 podman-compose up -d
-
-# 4. 查看日志
-podman-compose logs -f user-service file-service
+# 4. 测试 API
+curl http://localhost:8080/health
+curl -X POST http://localhost:8080/api/v1/user/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"123456"}'
 ```
 
 ## 面试要点
 
-1. **为什么优先 Podman？**
-   - 无守护进程 (daemonless)
-   - 支持 rootless 容器，更安全
-   - 兼容 Docker 命令和镜像
-   - Red Hat/Fedora 默认容器运行时
-
-2. **多阶段构建的好处？**
-   - 构建环境与运行环境分离
-   - 最终镜像更小 (~20MB vs ~1GB)
-   - 不包含编译工具，更安全
-
-3. **为什么用 Alpine？**
-   - 体积小 (~5MB)
-   - 安全更新及时
-   - 足够运行静态编译的 Go 二进制
+1. **为什么用多阶段构建？** — 构建环境与运行环境分离，镜像更小更安全
+2. **为什么 Alpine？** — 体积小 (~5MB)，安全更新及时
+3. **Consul 在容器中怎么工作？** — 单节点 server 模式，服务通过 `consul:8500` 访问
+4. **服务启动顺序？** — `depends_on` + healthcheck 确保基础设施就绪后才启动应用

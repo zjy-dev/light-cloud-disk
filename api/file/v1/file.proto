@@ -4,120 +4,37 @@ package api.file.v1;
 
 option go_package = "github.com/J-Y-Zhang/light-cloud-disk/api/file/v1;v1";
 
-import "google/api/annotations.proto";
-
 service FileService {
   // 检查秒传和断点续传
-  rpc CheckUpload (CheckUploadRequest) returns (CheckUploadReply) {
-    option (google.api.http) = {
-      get: "/api/v1/file/upload/check"
-    };
-  }
-  
+  rpc CheckUpload (CheckUploadRequest) returns (CheckUploadReply);
   // 上传文件分块
-  rpc UploadChunk (UploadChunkRequest) returns (UploadChunkReply) {
-    option (google.api.http) = {
-      post: "/api/v1/file/upload/chunk"
-      body: "*"
-    };
-  }
-  
+  rpc UploadChunk (UploadChunkRequest) returns (UploadChunkReply);
   // 合并文件分块
-  rpc MergeChunks (MergeChunksRequest) returns (MergeChunksReply) {
-    option (google.api.http) = {
-      post: "/api/v1/file/upload/merge"
-      body: "*"
-    };
-  }
-  
+  rpc MergeChunks (MergeChunksRequest) returns (MergeChunksReply);
   // 获取用户文件列表
-  rpc ListFiles (ListFilesRequest) returns (ListFilesReply) {
-    option (google.api.http) = {
-      get: "/api/v1/files"
-    };
-  }
-  
+  rpc ListFiles (ListFilesRequest) returns (ListFilesReply);
   // 获取文件下载链接
-  rpc GetDownloadURL (GetDownloadURLRequest) returns (GetDownloadURLReply) {
-    option (google.api.http) = {
-      get: "/api/v1/file/download"
-    };
-  }
-  
+  rpc GetDownloadURL (GetDownloadURLRequest) returns (GetDownloadURLReply);
   // 删除文件（移到回收站）
-  rpc DeleteFile (DeleteFileRequest) returns (DeleteFileReply) {
-    option (google.api.http) = {
-      delete: "/api/v1/file"
-    };
-  }
-  
+  rpc DeleteFile (DeleteFileRequest) returns (DeleteFileReply);
   // 重命名文件
-  rpc RenameFile (RenameFileRequest) returns (RenameFileReply) {
-    option (google.api.http) = {
-      put: "/api/v1/file/rename"
-      body: "*"
-    };
-  }
-  
+  rpc RenameFile (RenameFileRequest) returns (RenameFileReply);
   // 创建文件夹
-  rpc CreateFolder (CreateFolderRequest) returns (CreateFolderReply) {
-    option (google.api.http) = {
-      post: "/api/v1/folder"
-      body: "*"
-    };
-  }
-  
+  rpc CreateFolder (CreateFolderRequest) returns (CreateFolderReply);
   // 移动文件/文件夹
-  rpc MoveFile (MoveFileRequest) returns (MoveFileReply) {
-    option (google.api.http) = {
-      put: "/api/v1/file/move"
-      body: "*"
-    };
-  }
-  
+  rpc MoveFile (MoveFileRequest) returns (MoveFileReply);
   // 获取回收站列表
-  rpc ListTrash (ListTrashRequest) returns (ListTrashReply) {
-    option (google.api.http) = {
-      get: "/api/v1/trash"
-    };
-  }
-  
+  rpc ListTrash (ListTrashRequest) returns (ListTrashReply);
   // 恢复回收站文件
-  rpc RestoreFile (RestoreFileRequest) returns (RestoreFileReply) {
-    option (google.api.http) = {
-      post: "/api/v1/trash/restore"
-      body: "*"
-    };
-  }
-  
+  rpc RestoreFile (RestoreFileRequest) returns (RestoreFileReply);
   // 彻底删除文件
-  rpc PermanentDelete (PermanentDeleteRequest) returns (PermanentDeleteReply) {
-    option (google.api.http) = {
-      delete: "/api/v1/trash"
-    };
-  }
-  
+  rpc PermanentDelete (PermanentDeleteRequest) returns (PermanentDeleteReply);
   // 创建分享链接
-  rpc CreateShare (CreateShareRequest) returns (CreateShareReply) {
-    option (google.api.http) = {
-      post: "/api/v1/share"
-      body: "*"
-    };
-  }
-  
+  rpc CreateShare (CreateShareRequest) returns (CreateShareReply);
   // 获取分享内容
-  rpc GetShare (GetShareRequest) returns (GetShareReply) {
-    option (google.api.http) = {
-      get: "/api/v1/share/{share_id}"
-    };
-  }
-  
+  rpc GetShare (GetShareRequest) returns (GetShareReply);
   // 搜索文件
-  rpc SearchFiles (SearchFilesRequest) returns (SearchFilesReply) {
-    option (google.api.http) = {
-      get: "/api/v1/files/search"
-    };
-  }
+  rpc SearchFiles (SearchFilesRequest) returns (SearchFilesReply);
 }
 
 // 秒传/断点续传检查
@@ -128,8 +45,8 @@ message CheckUploadRequest {
 }
 
 message CheckUploadReply {
-  bool can_fast_upload = 1;  // 是否可以秒传
-  repeated int32 uploaded_chunks = 2;  // 已上传的分块索引
+  bool can_fast_upload = 1;
+  repeated int32 uploaded_chunks = 2;
 }
 
 // 分块上传
@@ -148,7 +65,7 @@ message UploadChunkReply {
 // 合并分块
 message MergeChunksRequest {
   int64 user_id = 1;
-  int64 parent_id = 2;  // 父文件夹ID，0表示根目录
+  int64 parent_id = 2;
   string file_name = 3;
   string file_md5 = 4;
   int64 file_size = 5;
@@ -163,7 +80,7 @@ message MergeChunksReply {
 // 文件列表
 message ListFilesRequest {
   int64 user_id = 1;
-  int64 parent_id = 2;  // 父文件夹ID，0表示根目录
+  int64 parent_id = 2;
   int32 page = 3;
   int32 page_size = 4;
 }
@@ -259,7 +176,7 @@ message TrashFileInfo {
   int64 size = 3;
   bool is_folder = 4;
   int64 deleted_at = 5;
-  int64 expire_at = 6;  // 过期时间（30天后自动删除）
+  int64 expire_at = 6;
 }
 
 // 恢复文件
@@ -286,8 +203,8 @@ message PermanentDeleteReply {
 message CreateShareRequest {
   int64 user_id = 1;
   int64 file_id = 2;
-  int32 expire_days = 3;  // 过期天数，0表示永久
-  string password = 4;    // 提取码，空表示无密码
+  int32 expire_days = 3;
+  string password = 4;
 }
 
 message CreateShareReply {

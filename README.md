@@ -3,145 +3,272 @@
 [![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
 [![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
 
-基于 Kratos v2 的云存储服务，用于学习微服务架构和面试展示。
+基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。
+
+## 架构概览
+
+```
+                    ┌──────────────────────┐
+                    │    Gin API Gateway   │
+                    │     (HTTP :8080)     │
+                    └────┬────────────┬────┘
+                         │  gRPC      │  gRPC
+               ┌─────────┘            └──────────┐
+               ▼                                  ▼
+    ┌─────────────────────┐           ┌─────────────────────┐
+    │   User Service      │           │   File Service      │
+    │   (gRPC :9001)      │◄──gRPC────│   (gRPC :9002)      │
+    │   Kratos v2         │           │   Kratos v2         │
+    └────────┬────────────┘           └────┬───────┬────────┘
+             │                             │       │
+             ▼                             ▼       ▼
+    ┌─────────────────┐           ┌────────────┐ ┌───────┐
+    │     MySQL       │           │   MySQL    │ │ Redis │
+    └─────────────────┘           └────────────┘ └───────┘
+
+    ← ─ ─ ─  Consul 服务发现  ─ ─ ─ →
+```
+
+- **User Service**: 用户注册/登录、信息管理、存储配额 (gRPC-only, Kratos v2)
+- **File Service**: 分块上传、秒传、文件管理、回收站、分享 (gRPC-only, Kratos v2)
+- **API Gateway**: HTTP 路由、JWT 认证、CORS、gRPC 代理 (Gin)
+- **Consul**: 服务注册与发现
 
 ## 技术栈
 
 | 组件 | 技术选型 | 版本 |
 |------|----------|------|
 | 微服务框架 | Kratos | v2.9.2 |
-| 通信协议 | gRPC + HTTP | - |
+| API 网关 | Gin | v1.10+ |
+| 服务发现 | Consul | 1.19 |
+| 通信协议 | gRPC (服务间) + HTTP (客户端) | - |
 | ORM | GORM | v1.25.12 |
 | 缓存 | Redis | v8.11.5 |
-| 消息队列 | Kafka | v0.4.47 |
-| 对象存储 | 阿里云 OSS | - |
+| 消息队列 | Kafka (预留) | v3.6 |
 | 依赖注入 | Wire | v0.6.0 |
-| 认证 | JWT | - |
+| 认证 | JWT (golang-jwt/jwt v5) | v5 |
+| 容器编排 | Docker/Podman Compose | - |
 
 ## 功能特性
 
 ### 用户服务
-- [x] 用户注册/登录 (JWT认证)
+- [x] 用户注册/登录 (JWT 认证)
 - [x] 用户信息管理
-- [x] 存储配额管理 (默认10GB)
+- [x] 存储配额管理 (默认 10GB)
+- [x] 跨服务存储用量更新 (UpdateStorageUsed RPC)
 
 ### 文件服务
 - [x] 分块上传 (大文件支持，5MB/块)
-- [x] 秒传 (基于MD5去重)
-- [x] 断点续传 (Redis记录上传状态)
+- [x] 秒传 (基于 MD5 去重)
+- [x] 断点续传 (Redis 记录上传状态)
 - [x] 文件夹管理 (树形结构)
 - [x] 文件搜索 (模糊匹配)
-- [x] 回收站 (软删除+30天自动清理)
-- [x] 文件分享 (链接+提取码+过期时间)
-- [x] 异步转存OSS (Kafka消息队列)
+- [x] 回收站 (软删除 + 恢复)
+- [x] 文件分享 (链接 + 提取码 + 过期时间)
+- [x] 文件移动/重命名
+- [x] 下载链接获取
+
+### 网关
+- [x] JWT 认证中间件 (保护路由)
+- [x] CORS 跨域中间件
+- [x] 请求日志中间件
+- [x] gRPC 代理 (HTTP → gRPC 协议转换)
+- [x] Consul 服务发现 (自动发现后端服务)
 
 ## 项目结构
 
 ```
 .
-├── api/                    # protobuf API定义
-│   ├── user/v1/           # 用户服务API
-│   └── file/v1/           # 文件服务API
-├── cmd/                    # 服务入口
-│   ├── user/              # 用户服务
-│   └── file/              # 文件服务
-├── internal/
-│   ├── biz/               # 业务逻辑层 (UseCase)
-│   ├── data/              # 数据访问层 (Repository)
-│   ├── service/           # 服务实现层
-│   ├── server/            # HTTP/gRPC服务器
-│   ├── conf/              # 配置定义
-│   └── mq/                # 消息队列
-├── configs/               # 配置文件
-├── docs/                  # 功能文档
-├── third_party/           # 第三方proto
-├── Makefile
+├── api/                          # Protobuf API 定义
+│   ├── user/v1/                 # 用户服务 proto + 生成代码
+│   └── file/v1/                 # 文件服务 proto + 生成代码
+├── app/                          # 微服务目录
+│   ├── user/                    # 用户服务
+│   │   ├── cmd/                 # 入口 (main.go, wire.go)
+│   │   ├── internal/            # 内部实现
+│   │   │   ├── biz/            # 业务逻辑 (UserUsecase)
+│   │   │   ├── data/           # 数据访问 (MySQL)
+│   │   │   ├── service/        # gRPC 服务实现
+│   │   │   ├── server/         # gRPC 服务器配置
+│   │   │   └── conf/           # 配置定义 (proto)
+│   │   └── configs/            # 配置文件 (YAML)
+│   ├── file/                    # 文件服务
+│   │   ├── cmd/                 # 入口
+│   │   ├── internal/            # 内部实现
+│   │   │   ├── biz/            # 业务逻辑 (FileUsecase)
+│   │   │   ├── data/           # 数据访问 (MySQL + Redis)
+│   │   │   ├── service/        # gRPC 服务实现
+│   │   │   ├── server/         # gRPC 服务器配置
+│   │   │   └── conf/           # 配置定义
+│   │   └── configs/            # 配置文件
+│   └── gateway/                 # API 网关
+│       ├── cmd/                 # 入口 (Gin 路由)
+│       ├── internal/
+│       │   ├── client/         # gRPC 客户端 (Consul 发现)
+│       │   ├── handler/        # HTTP 处理器
+│       │   └── middleware/     # JWT、CORS、Logger
+│       └── configs/            # 配置文件
+├── third_party/                 # 第三方 proto
+├── docs/                        # 功能文档
+├── Dockerfile                   # 多阶段构建 (3 服务共用)
+├── docker-compose.yml           # 完整编排
+├── Makefile                     # 构建/运行/生成命令
 └── go.mod
 ```
 
 ## 快速开始
 
-### 1. 环境准备
-- Go 1.22+
+### 环境准备
+- Go 1.25+
 - MySQL 8.0+
-- Redis 6.0+
-- Kafka (可选)
+- Redis 7+
+- Consul 1.19+
+- protoc + protoc-gen-go + protoc-gen-go-grpc
 
-### 2. 安装工具
+### 安装工具
 ```bash
 make init
 ```
 
-### 3. 生成代码
+### 生成代码
 ```bash
-make api    # 生成proto代码
-make conf   # 生成配置代码
-make wire   # 生成依赖注入代码
+make api          # 生成 proto 代码
+make conf-user    # 生成用户服务配置代码
+make conf-file    # 生成文件服务配置代码
+make wire-user    # 生成用户服务依赖注入
+make wire-file    # 生成文件服务依赖注入
 ```
 
-### 4. 配置环境变量
+### 配置环境变量
 ```bash
 cp .env.example .env
 # 编辑 .env 填入实际配置
 ```
 
-### 5. 运行服务
+### 本地运行 (需先启动基础设施)
 ```bash
-make run-user   # 启动用户服务 (HTTP:8000, gRPC:9000)
-make run-file   # 启动文件服务
+make infra-up       # 启动 MySQL + Redis + Consul + Kafka
+make run-user       # 启动用户服务 (gRPC :9001)
+make run-file       # 启动文件服务 (gRPC :9002)
+make run-gateway    # 启动 API 网关 (HTTP :8080)
 ```
 
-### 6. 运行测试
+### 容器化运行
 ```bash
-make test
+docker-compose up -d   # 或 podman-compose up -d
+```
+
+### 运行测试
+```bash
+go test ./...                                  # 全部单元测试
+go test -v ./app/user/internal/biz/            # 用户 biz 测试
+go test -v ./app/file/internal/biz/            # 文件 biz 测试
+go test -v ./app/gateway/internal/handler/     # 网关 handler 测试
+go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 ```
 
 ## API 接口
 
-### 用户服务
+所有 HTTP 请求通过 Gateway (:8080) 访问。
+
+### 公开路由 (无需认证)
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | /api/v1/user/register | 用户注册 |
 | POST | /api/v1/user/login | 用户登录 |
-| GET | /api/v1/user/info | 获取用户信息 |
-| PUT | /api/v1/user/info | 更新用户信息 |
+| GET | /api/v1/share/:share_id | 获取分享内容 |
+| GET | /health | 健康检查 |
 
-### 文件服务
+### 保护路由 (需 JWT Token)
+
+请求头: `Authorization: Bearer <token>`
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | /api/v1/file/upload/check | 检查秒传/断点续传 |
-| POST | /api/v1/file/upload/chunk | 上传文件分块 |
-| POST | /api/v1/file/upload/merge | 合并分块 |
-| GET | /api/v1/files | 获取文件列表 |
-| GET | /api/v1/file/download | 获取下载链接 |
-| DELETE | /api/v1/file | 删除文件 |
-| PUT | /api/v1/file/rename | 重命名 |
-| POST | /api/v1/folder | 创建文件夹 |
+| GET | /api/v1/user/info | 获取用户信息 |
+| PUT | /api/v1/user/info | 更新用户信息 |
+| POST | /api/v1/file/check-upload | 秒传/断点续传检查 |
+| POST | /api/v1/file/upload-chunk | 上传文件分块 |
+| POST | /api/v1/file/merge-chunks | 合并分块 |
+| GET | /api/v1/files | 文件列表 |
+| POST | /api/v1/file/folder | 创建文件夹 |
+| PUT | /api/v1/file/rename | 重命名文件 |
+| DELETE | /api/v1/files | 删除文件 (移入回收站) |
 | PUT | /api/v1/file/move | 移动文件 |
+| GET | /api/v1/file/download/:file_id | 获取下载链接 |
+| GET | /api/v1/files/search | 搜索文件 |
 | GET | /api/v1/trash | 回收站列表 |
 | POST | /api/v1/trash/restore | 恢复文件 |
 | DELETE | /api/v1/trash | 彻底删除 |
 | POST | /api/v1/share | 创建分享 |
-| GET | /api/v1/share/{id} | 获取分享 |
-| GET | /api/v1/files/search | 搜索文件 |
 
-## 消息队列场景
+## 服务通信
+
+```
+Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
+                    │                    ▲
+                    │──gRPC──▶ File Service ──gRPC──┘
+                                (UpdateStorageUsed)
+```
+
+- Gateway 通过 Consul 发现 `user-service` 和 `file-service`
+- File Service 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` 更新存储用量
+- 所有 gRPC 连接使用 Kratos gRPC 客户端 + Consul 服务发现
+
+## 消息队列 (预留)
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| file-transfer | FileService | TransferWorker | 文件异步转存OSS |
+| file-transfer | FileService | TransferWorker | 文件异步转存 OSS |
 | file-thumbnail | FileService | ThumbnailWorker | 生成文件缩略图 |
-| trash-cleanup | CronJob | CleanupWorker | 回收站过期清理 |
-| share-expire | CronJob | ShareWorker | 分享链接过期处理 |
+
+## 环境变量
+
+| 变量 | 说明 | 服务 | 示例 |
+|------|------|------|------|
+| DB_HOST | 数据库地址 | user, file | localhost |
+| DB_PORT | 数据库端口 | user, file | 3306 |
+| DB_USER | 数据库用户 | user, file | root |
+| DB_PASSWORD | 数据库密码 | user, file | *** |
+| DB_NAME | 数据库名 | user, file | cloud_disk |
+| REDIS_ADDR | Redis 地址 | file | localhost:6379 |
+| CONSUL_ADDR | Consul 地址 | user, file, gateway | localhost:8500 |
+| JWT_SECRET | JWT 密钥 | gateway | *** |
+| GATEWAY_ADDR | 网关监听地址 | gateway | :8080 |
+| OSS_ENDPOINT | OSS 端点 | file | oss-cn-hangzhou.aliyuncs.com |
+| OSS_ACCESS_KEY_ID | OSS AK | file | *** |
+| OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
+| KAFKA_BROKERS | Kafka 地址 | file | localhost:9092 |
+
+## 测试覆盖
+
+| 模块 | 测试类型 | 测试数 | 说明 |
+|------|----------|--------|------|
+| app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
+| app/file/internal/biz | 单元测试 | 25 | Mock FileRepo + UserClient |
+| app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
+| app/gateway/internal/middleware | 单元测试 | 8 | JWT + CORS |
+| app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
+| app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag) |
 
 ## 文档
 
+- [微服务架构设计](docs/architecture.md)
+- [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
-- [消息队列使用场景](docs/message-queue.md)
-- [CI/CD 配置](docs/ci-cd.md)
-- [容器化部署](docs/containerization.md)
+- [服务发现与通信](docs/service-discovery.md)
 
 ## 更新日志
+
+### v3.0.0 (2026)
+- 从伪微服务重构为真正的微服务架构
+- 拆分独立 User Service (gRPC-only, Kratos v2)
+- 拆分独立 File Service (gRPC-only, Kratos v2)
+- 新增 Gin API Gateway (HTTP→gRPC 代理)
+- 新增 Consul 服务注册与发现
+- File Service 通过 gRPC 调用 User Service (替代共享 DB 访问)
+- 60 个单元测试 + 12 个集成测试
 
 ### v2.0.0 (2025)
 - 使用 Kratos v2 重构

@@ -1,7 +1,24 @@
-# Podman/Docker Compose 配置
-# 使用: podman-compose up -d 或 docker-compose up -d
+# Podman/Docker Compose configuration
+# Usage: podman-compose up -d or docker-compose up -d
 
 services:
+  consul:
+    image: docker.io/hashicorp/consul:1.19
+    container_name: cloud-disk-consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    volumes:
+      - consul_data:/consul/data
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cloud-disk
+
   mysql:
     image: docker.io/library/mysql:8.0
     container_name: cloud-disk-mysql
@@ -75,16 +92,13 @@ services:
       DB_USER: root
       DB_PASSWORD: ${DB_PASSWORD:-root123}
       DB_NAME: ${DB_NAME:-cloud_disk}
-      REDIS_ADDR: redis:6379
-      KAFKA_BROKERS: kafka:9092
-      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret}
+      CONSUL_ADDR: consul:8500
     ports:
-      - "8000:8000"
-      - "9000:9000"
+      - "9001:9001"
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
+      consul:
         condition: service_healthy
     networks:
       - cloud-disk
@@ -105,14 +119,14 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-root123}
       DB_NAME: ${DB_NAME:-cloud_disk}
       REDIS_ADDR: redis:6379
+      CONSUL_ADDR: consul:8500
       KAFKA_BROKERS: kafka:9092
       OSS_ENDPOINT: ${OSS_ENDPOINT:-}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
       OSS_BUCKET_NAME: ${OSS_BUCKET_NAME:-}
     ports:
-      - "8001:8000"
-      - "9001:9000"
+      - "9002:9002"
     volumes:
       - file_storage:/app/store
       - file_tmp:/app/tmp
@@ -121,12 +135,38 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      kafka:
+      consul:
         condition: service_healthy
     networks:
       - cloud-disk
 
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+        VERSION: ${VERSION:-dev}
+    image: light-cloud-disk/gateway:${VERSION:-latest}
+    container_name: cloud-disk-gateway
+    environment:
+      CONSUL_ADDR: consul:8500
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret}
+      GATEWAY_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      consul:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      file-service:
+        condition: service_started
+    networks:
+      - cloud-disk
+
 volumes:
+  consul_data:
   mysql_data:
   redis_data:
   kafka_data:

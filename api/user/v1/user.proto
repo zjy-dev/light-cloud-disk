@@ -4,35 +4,13 @@ package api.user.v1;
 
 option go_package = "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1;v1";
 
-import "google/api/annotations.proto";
-
 service UserService {
-  rpc Register (RegisterRequest) returns (RegisterReply) {
-    option (google.api.http) = {
-      post: "/api/v1/user/register"
-      body: "*"
-    };
-  }
-  
-  rpc Login (LoginRequest) returns (LoginReply) {
-    option (google.api.http) = {
-      post: "/api/v1/user/login"
-      body: "*"
-    };
-  }
-  
-  rpc GetUserInfo (GetUserInfoRequest) returns (GetUserInfoReply) {
-    option (google.api.http) = {
-      get: "/api/v1/user/info"
-    };
-  }
-  
-  rpc UpdateUserInfo (UpdateUserInfoRequest) returns (UpdateUserInfoReply) {
-    option (google.api.http) = {
-      put: "/api/v1/user/info"
-      body: "*"
-    };
-  }
+  rpc Register (RegisterRequest) returns (RegisterReply);
+  rpc Login (LoginRequest) returns (LoginReply);
+  rpc GetUserInfo (GetUserInfoRequest) returns (GetUserInfoReply);
+  rpc UpdateUserInfo (UpdateUserInfoRequest) returns (UpdateUserInfoReply);
+  // 内部 RPC，供 file-service 调用
+  rpc UpdateStorageUsed (UpdateStorageUsedRequest) returns (UpdateStorageUsedReply);
 }
 
 message RegisterRequest {
@@ -74,6 +52,15 @@ message UpdateUserInfoRequest {
 }
 
 message UpdateUserInfoReply {
+  bool success = 1;
+}
+
+message UpdateStorageUsedRequest {
+  int64 user_id = 1;
+  int64 delta = 2;
+}
+
+message UpdateStorageUsedReply {
   bool success = 1;
 }
 
