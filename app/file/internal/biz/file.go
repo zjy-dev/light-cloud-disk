@@ -3,6 +3,9 @@ package biz
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
@@ -64,9 +67,9 @@ type FileRepo interface {
 	FindByID(ctx context.Context, id int64) (*File, error)
 	FindByUserAndParent(ctx context.Context, userID, parentID int64, page, pageSize int32) ([]*File, int64, error)
 	Update(ctx context.Context, file *File) error
-	SoftDelete(ctx context.Context, ids []int64) error
-	Restore(ctx context.Context, ids []int64) error
-	PermanentDelete(ctx context.Context, ids []int64) error
+	SoftDelete(ctx context.Context, userID int64, ids []int64) error
+	Restore(ctx context.Context, userID int64, ids []int64) error
+	PermanentDelete(ctx context.Context, userID int64, ids []int64) error
 	FindTrash(ctx context.Context, userID int64, page, pageSize int32) ([]*File, int64, error)
 	Search(ctx context.Context, userID int64, keyword string, page, pageSize int32) ([]*File, int64, error)
 
@@ -83,6 +86,8 @@ type FileRepo interface {
 
 	// Chunk upload (Redis)
 	GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int32, error)
+	SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error
+	MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error)
 	SaveChunkInfo(ctx context.Context, chunk *ChunkInfo) error
 	ClearChunkInfo(ctx context.Context, fileMD5 string) error
 }
@@ -121,7 +126,15 @@ func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize
 	return false, uploadedChunks, nil
 }
 
-func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex int32, chunkSize int64) error {
+func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex int32, chunkSize int64, chunkData []byte) error {
+	if int64(len(chunkData)) != chunkSize {
+		return errors.New("chunk size mismatch")
+	}
+
+	if err := uc.repo.SaveChunkData(ctx, fileMD5, chunkIndex, chunkData); err != nil {
+		return err
+	}
+
 	chunk := &ChunkInfo{
 		FileMD5:    fileMD5,
 		ChunkIndex: chunkIndex,
@@ -131,10 +144,30 @@ func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex
 	return uc.repo.SaveChunkInfo(ctx, chunk)
 }
 
-func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64) (*File, error) {
+func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalChunks int32) (*File, error) {
 	store, _ := uc.repo.FindStoreByMD5(ctx, fileMD5)
+	storePath := ""
+
 	if store != nil {
-		uc.repo.IncrStoreRefCount(ctx, fileMD5)
+		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
+			return nil, err
+		}
+		storePath = store.StorePath
+	} else {
+		mergedPath, err := uc.repo.MergeChunkData(ctx, fileMD5, fileName, totalChunks)
+		if err != nil {
+			return nil, err
+		}
+		storePath = mergedPath
+
+		if err := uc.repo.CreateStore(ctx, &FileStore{
+			FileMD5:   fileMD5,
+			Size:      fileSize,
+			StorePath: mergedPath,
+			RefCount:  1,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	file := &File{
@@ -144,6 +177,7 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		FileMD5:  fileMD5,
 		Size:     fileSize,
 		IsFolder: false,
+		Path:     storePath,
 	}
 
 	createdFile, err := uc.repo.Create(ctx, file)
@@ -151,7 +185,9 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return nil, err
 	}
 
-	uc.repo.ClearChunkInfo(ctx, fileMD5)
+	if err := uc.repo.ClearChunkInfo(ctx, fileMD5); err != nil {
+		uc.log.Warnf("failed to clear chunk info for %s: %v", fileMD5, err)
+	}
 
 	// Call user-service via gRPC to update storage usage
 	if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
@@ -189,17 +225,38 @@ func (uc *FileUsecase) RenameFile(ctx context.Context, userID, fileID int64, new
 }
 
 func (uc *FileUsecase) DeleteFiles(ctx context.Context, userID int64, fileIDs []int64) error {
-	return uc.repo.SoftDelete(ctx, fileIDs)
+	if len(fileIDs) == 0 {
+		return nil
+	}
+	for _, id := range fileIDs {
+		file, err := uc.repo.FindByID(ctx, id)
+		if err != nil || file.UserID != userID {
+			return ErrFileNotFound
+		}
+	}
+	return uc.repo.SoftDelete(ctx, userID, fileIDs)
 }
 
 func (uc *FileUsecase) MoveFiles(ctx context.Context, userID int64, fileIDs []int64, targetFolderID int64) error {
+	if targetFolderID != 0 {
+		target, err := uc.repo.FindByID(ctx, targetFolderID)
+		if err != nil || target.UserID != userID || !target.IsFolder {
+			return ErrFolderNotFound
+		}
+	}
+
 	for _, id := range fileIDs {
 		file, err := uc.repo.FindByID(ctx, id)
 		if err != nil {
-			continue
+			return ErrFileNotFound
+		}
+		if file.UserID != userID {
+			return ErrFileNotFound
 		}
 		file.ParentID = targetFolderID
-		uc.repo.Update(ctx, file)
+		if err := uc.repo.Update(ctx, file); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -209,11 +266,36 @@ func (uc *FileUsecase) ListTrash(ctx context.Context, userID int64, page, pageSi
 }
 
 func (uc *FileUsecase) RestoreFiles(ctx context.Context, userID int64, fileIDs []int64) error {
-	return uc.repo.Restore(ctx, fileIDs)
+	if len(fileIDs) == 0 {
+		return nil
+	}
+	return uc.repo.Restore(ctx, userID, fileIDs)
 }
 
 func (uc *FileUsecase) PermanentDelete(ctx context.Context, userID int64, fileIDs []int64) error {
-	return uc.repo.PermanentDelete(ctx, fileIDs)
+	if len(fileIDs) == 0 {
+		return nil
+	}
+	return uc.repo.PermanentDelete(ctx, userID, fileIDs)
+}
+
+func (uc *FileUsecase) GetDownloadURL(ctx context.Context, userID, fileID int64) (string, string, error) {
+	file, err := uc.repo.FindByID(ctx, fileID)
+	if err != nil || file.UserID != userID || file.IsFolder {
+		return "", "", ErrFileNotFound
+	}
+
+	store, err := uc.repo.FindStoreByMD5(ctx, file.FileMD5)
+	if err != nil {
+		return "", "", ErrFileNotFound
+	}
+
+	downloadURL := store.StorePath
+	if prefix := strings.TrimSpace(os.Getenv("DOWNLOAD_URL_PREFIX")); prefix != "" {
+		downloadURL = strings.TrimRight(prefix, "/") + "/" + filepath.Base(store.StorePath)
+	}
+
+	return downloadURL, file.Name, nil
 }
 
 func (uc *FileUsecase) CreateShare(ctx context.Context, userID, fileID int64, expireDays int32, password string) (*Share, error) {

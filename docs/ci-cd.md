@@ -25,6 +25,17 @@
      - `file-service`
    - 上传构建产物
 
+3. **Compose Smoke Job** (依赖后端/前端测试通过)
+    - `docker compose up -d --build` 启动全栈容器
+    - 校验 Gateway 健康检查 (`/health`)
+    - 校验 Frontend 可访问 (`http://localhost:3000/`)
+    - 校验 gRPC 端口连通 (`9001/9002`)
+    - 无论成功失败都执行 `docker compose down -v`
+
+4. **Docker Images Job**
+    - 后端与前端镜像在 Compose Smoke 通过后构建/推送
+    - `latest` 标签仅在 `main` 分支 push 时发布
+
 ### Release 工作流 (release.yml)
 
 **触发条件**: 推送以 `v` 开头的 tag (如 `v3.0.0`)

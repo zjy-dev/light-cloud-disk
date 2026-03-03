@@ -112,7 +112,7 @@ func TestIntegration_FileRepo_SoftDeleteAndRestore(t *testing.T) {
 
 	f, _ := repo.Create(ctx, &biz.File{UserID: 1, ParentID: 0, Name: "delete-me.txt"})
 
-	err := repo.SoftDelete(ctx, []int64{f.ID})
+	err := repo.SoftDelete(ctx, int64(1), []int64{f.ID})
 	assert.NoError(t, err)
 
 	// Should appear in trash
@@ -128,7 +128,7 @@ func TestIntegration_FileRepo_SoftDeleteAndRestore(t *testing.T) {
 	assert.Empty(t, files)
 
 	// Restore
-	err = repo.Restore(ctx, []int64{f.ID})
+	err = repo.Restore(ctx, int64(1), []int64{f.ID})
 	assert.NoError(t, err)
 
 	files, total, _ = repo.FindByUserAndParent(ctx, 1, 0, 1, 20)

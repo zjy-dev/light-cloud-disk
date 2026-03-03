@@ -199,6 +199,10 @@ make run-gateway    # 启动 API 网关 (HTTP :8080)
 docker-compose up -d   # 或 podman-compose up -d
 ```
 
+说明：
+- 前端镜像采用多阶段构建（容器内执行 `pnpm install && pnpm build`），不再依赖宿主机预先生成 `frontend/dist/`
+- `docker-compose.yml` 已包含前端、网关、用户服务、文件服务、Consul、MySQL、Redis、Kafka 全量服务
+
 ### 运行测试
 ```bash
 go test ./...                                  # 全部单元测试
@@ -281,6 +285,9 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | OSS_ACCESS_KEY_ID | OSS AK | file | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
 | KAFKA_BROKERS | Kafka 地址 | file | localhost:9092 |
+| FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
+| FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
+| DOWNLOAD_URL_PREFIX | 下载 URL 前缀 | file | http://localhost:8080/downloads |
 
 ## 测试覆盖
 
@@ -318,6 +325,11 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 
 ### v4.0.0 (2026)
 - 新增 Vue 3 前端 (TypeScript + Vite + Tailwind CSS v4)
+
+### v4.0.1 (2026)
+- CI 新增 Compose 冒烟验证（全栈容器启动 + Gateway/Frontend/后端端口连通性检查）
+- 修复前端镜像依赖宿主机 `dist` 的构建问题，改为 Docker 多阶段自构建
+- Compose 中 Kafka 镜像固定到 `3.6.2`，避免 `latest` 漂移
 - Monorepo 结构 (前后端同仓)
 - 深色/浅色双主题 (浅色天蓝风格)
 - 文件浏览器 (网格/列表视图、搜索、排序)

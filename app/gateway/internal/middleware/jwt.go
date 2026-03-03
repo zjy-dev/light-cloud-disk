@@ -27,7 +27,9 @@ func JWTAuth() gin.HandlerFunc {
 
 		secret := os.Getenv("JWT_SECRET")
 		if secret == "" {
-			secret = "default-jwt-secret"
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "server misconfigured: JWT_SECRET is required"})
+			c.Abort()
+			return
 		}
 
 		token, err := jwt.Parse(parts[1], func(t *jwt.Token) (interface{}, error) {

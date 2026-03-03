@@ -174,6 +174,13 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 5. **Wire 依赖注入**: 每个 Kratos 服务使用独立的 `wire.go`，Gateway 不使用 Wire (直接构造)。
 6. **Monorepo 结构**: 后端留在根目录（避免破坏 Go module 路径），前端位于 `frontend/` 目录。
 
+## 最近更新（2026-03）
+
+- 前端镜像改为多阶段自构建（Node 构建 + Nginx 运行），不依赖宿主机 `dist/`。
+- `docker-compose.yml` 继续保持全栈容器编排（frontend/gateway/user/file/consul/mysql/redis/kafka），并固定 Kafka 镜像版本到 `apache/kafka:3.6.2`。
+- GitHub Actions `ci.yml` 新增 Compose 冒烟测试，验证容器启动与关键连通性后再执行镜像推送。
+- 文件上传链路补全为“分块落盘 + 合并落盘 + 存储表记录 + 下载 URL 返回”，并通过 Gateway `/downloads` 暴露只读下载路径。
+
 ## 前端架构
 
 ### 技术栈

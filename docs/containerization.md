@@ -9,10 +9,12 @@
 | consul | hashicorp/consul:1.19 | 8500 (UI+API) | 服务注册与发现 |
 | mysql | mysql:8.0 | 3306 | 主数据库 |
 | redis | redis:7-alpine | 6379 | 分块上传状态缓存 |
-| kafka | bitnami/kafka:3.6 | 9092 | 消息队列 (预留) |
+| kafka | apache/kafka:3.6.2 | 9092 | 消息队列 (预留) |
 | user-service | 自构建 | 9001 (gRPC) | 用户服务 |
 | file-service | 自构建 | 9002 (gRPC) | 文件服务 |
 | gateway | 自构建 | 8080 (HTTP) | API 网关 |
+
+说明：Gateway 会只读挂载 `file_storage` 卷到 `/app/store`，并通过 `/downloads` 路由提供下载访问。
 
 ## 快速启动
 
@@ -67,6 +69,15 @@ CMD ["/app/server", "-conf", "/app/configs/"]
 - `CGO_ENABLED=0` 静态编译，无外部依赖
 - 最终镜像约 20MB
 - 支持通过 `--build-arg SERVICE=user|file|gateway` 构建不同服务
+
+## Frontend Dockerfile
+
+前端采用多阶段构建：
+
+1. `node:24-alpine` 阶段安装依赖并执行 `pnpm build`
+2. `nginx:1.27-alpine` 阶段仅拷贝 `dist/` 静态文件并提供服务
+
+这样可确保 CI 与本地容器构建行为一致，不依赖宿主机预构建产物。
 
 ## 启动顺序
 

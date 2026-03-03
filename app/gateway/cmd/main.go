@@ -47,6 +47,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// Local file download static route (mounted in compose as read-only volume)
+	r.Static("/downloads", "/app/store")
+
 	// Public routes (no auth)
 	api := r.Group("/api/v1")
 	{

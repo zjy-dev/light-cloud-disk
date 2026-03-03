@@ -45,18 +45,18 @@ func (m *MockFileRepo) Update(ctx context.Context, file *File) error {
 	return args.Error(0)
 }
 
-func (m *MockFileRepo) SoftDelete(ctx context.Context, ids []int64) error {
-	args := m.Called(ctx, ids)
+func (m *MockFileRepo) SoftDelete(ctx context.Context, userID int64, ids []int64) error {
+	args := m.Called(ctx, userID, ids)
 	return args.Error(0)
 }
 
-func (m *MockFileRepo) Restore(ctx context.Context, ids []int64) error {
-	args := m.Called(ctx, ids)
+func (m *MockFileRepo) Restore(ctx context.Context, userID int64, ids []int64) error {
+	args := m.Called(ctx, userID, ids)
 	return args.Error(0)
 }
 
-func (m *MockFileRepo) PermanentDelete(ctx context.Context, ids []int64) error {
-	args := m.Called(ctx, ids)
+func (m *MockFileRepo) PermanentDelete(ctx context.Context, userID int64, ids []int64) error {
+	args := m.Called(ctx, userID, ids)
 	return args.Error(0)
 }
 
@@ -123,6 +123,19 @@ func (m *MockFileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]int32), args.Error(1)
+}
+
+func (m *MockFileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error {
+	args := m.Called(ctx, fileMD5, chunkIndex, data)
+	return args.Error(0)
+}
+
+func (m *MockFileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error) {
+	args := m.Called(ctx, fileMD5, fileName, totalChunks)
+	if args.Get(0) == nil {
+		return "", args.Error(1)
+	}
+	return args.String(0), args.Error(1)
 }
 
 func (m *MockFileRepo) SaveChunkInfo(ctx context.Context, chunk *ChunkInfo) error {
@@ -210,10 +223,11 @@ func TestSaveChunk_Success(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("SaveChunkInfo", ctx, mock.MatchedBy(func(c *ChunkInfo) bool {
-		return c.FileMD5 == "abc123" && c.ChunkIndex == 2 && c.ChunkSize == 512 && c.Uploaded
+		return c.FileMD5 == "abc123" && c.ChunkIndex == 2 && c.ChunkSize == int64(len([]byte("chunk-data"))) && c.Uploaded
 	})).Return(nil)
+	repo.On("SaveChunkData", ctx, "abc123", int32(2), []byte("chunk-data")).Return(nil)
 
-	err := uc.SaveChunk(ctx, "abc123", 2, 512)
+	err := uc.SaveChunk(ctx, "abc123", 2, int64(len([]byte("chunk-data"))), []byte("chunk-data"))
 
 	assert.NoError(t, err)
 	repo.AssertExpectations(t)
@@ -228,6 +242,10 @@ func TestMergeChunks_NewStore(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
+	repo.On("CreateStore", ctx, mock.MatchedBy(func(s *FileStore) bool {
+		return s.FileMD5 == "abc123" && s.Size == 2048 && s.StorePath == "/tmp/store/abc123.zip"
+	})).Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
 		ID:      1,
 		UserID:  100,
@@ -238,7 +256,7 @@ func TestMergeChunks_NewStore(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048)
+	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), file.ID)
@@ -254,8 +272,9 @@ func TestMergeChunks_ExistingStore(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
-		FileMD5:  "abc123",
-		RefCount: 1,
+		FileMD5:   "abc123",
+		StorePath: "/tmp/store/abc123.zip",
+		RefCount:  1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
@@ -268,7 +287,7 @@ func TestMergeChunks_ExistingStore(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048)
+	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), file.ID)
@@ -283,6 +302,8 @@ func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
+	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
 		ID: 3, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
 	}, nil)
@@ -290,7 +311,7 @@ func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(errors.New("user-service unavailable"))
 
 	// Should still succeed - storage update failure is non-fatal
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048)
+	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, file)
@@ -393,7 +414,10 @@ func TestDeleteFiles_Success(t *testing.T) {
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	repo.On("SoftDelete", ctx, []int64{1, 2, 3}).Return(nil)
+	repo.On("FindByID", ctx, int64(1)).Return(&File{ID: 1, UserID: 100}, nil)
+	repo.On("FindByID", ctx, int64(2)).Return(&File{ID: 2, UserID: 100}, nil)
+	repo.On("FindByID", ctx, int64(3)).Return(&File{ID: 3, UserID: 100}, nil)
+	repo.On("SoftDelete", ctx, int64(100), []int64{1, 2, 3}).Return(nil)
 
 	err := uc.DeleteFiles(ctx, 100, []int64{1, 2, 3})
 
@@ -410,6 +434,7 @@ func TestMoveFiles_Success(t *testing.T) {
 
 	file1 := &File{ID: 1, UserID: 100, ParentID: 0}
 	file2 := &File{ID: 2, UserID: 100, ParentID: 0}
+	repo.On("FindByID", ctx, int64(10)).Return(&File{ID: 10, UserID: 100, IsFolder: true}, nil)
 	repo.On("FindByID", ctx, int64(1)).Return(file1, nil)
 	repo.On("FindByID", ctx, int64(2)).Return(file2, nil)
 	repo.On("Update", ctx, mock.AnythingOfType("*biz.File")).Return(nil).Twice()
@@ -448,7 +473,7 @@ func TestRestoreFiles_Success(t *testing.T) {
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	repo.On("Restore", ctx, []int64{1, 2}).Return(nil)
+	repo.On("Restore", ctx, int64(100), []int64{1, 2}).Return(nil)
 
 	err := uc.RestoreFiles(ctx, 100, []int64{1, 2})
 
@@ -461,7 +486,7 @@ func TestPermanentDelete_Success(t *testing.T) {
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	repo.On("PermanentDelete", ctx, []int64{1}).Return(nil)
+	repo.On("PermanentDelete", ctx, int64(100), []int64{1}).Return(nil)
 
 	err := uc.PermanentDelete(ctx, 100, []int64{1})
 

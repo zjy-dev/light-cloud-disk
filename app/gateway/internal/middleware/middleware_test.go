@@ -64,6 +64,29 @@ func TestJWTAuth_MissingHeader(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
+func TestJWTAuth_MissingSecretConfig(t *testing.T) {
+	os.Unsetenv("JWT_SECRET")
+
+	token := createTestToken("test-secret", jwt.MapClaims{
+		"user_id": float64(42),
+		"exp":     float64(time.Now().Add(time.Hour).Unix()),
+	})
+
+	w := httptest.NewRecorder()
+	c, r := gin.CreateTestContext(w)
+
+	r.Use(JWTAuth())
+	r.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	c.Request, _ = http.NewRequest("GET", "/test", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, c.Request)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 func TestJWTAuth_InvalidFormat(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, r := gin.CreateTestContext(w)

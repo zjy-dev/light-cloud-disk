@@ -47,7 +47,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
 
       - name: Enable pnpm
         run: corepack enable && corepack prepare pnpm@latest --activate
@@ -64,10 +64,47 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
+  compose-smoke:
+    name: Compose Smoke Test
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start compose stack
+        run: docker compose up -d --build
+
+      - name: Wait for services
+        run: sleep 20
+
+      - name: Verify gateway health
+        run: curl -fsS http://localhost:8080/health
+
+      - name: Verify frontend health
+        run: curl -fsS http://localhost:3000/ > /dev/null
+
+      - name: Verify gRPC ports
+        run: |
+          timeout 5 bash -c '</dev/tcp/127.0.0.1/9001'
+          timeout 5 bash -c '</dev/tcp/127.0.0.1/9002'
+
+      - name: Print compose status
+        if: always()
+        run: docker compose ps
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop compose stack
+        if: always()
+        run: docker compose down -v
+
   build:
     name: Build Backend
     runs-on: ubuntu-latest
-    needs: test-backend
+    needs: [test-backend, compose-smoke]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -94,7 +131,7 @@ jobs:
   docker-backend:
     name: Build & Push Backend Images
     runs-on: ubuntu-latest
-    needs: test-backend
+    needs: [test-backend, compose-smoke]
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -127,7 +164,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/v2' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -146,7 +183,7 @@ jobs:
   docker-frontend:
     name: Build & Push Frontend Image
     runs-on: ubuntu-latest
-    needs: test-frontend
+    needs: [test-frontend, compose-smoke]
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -176,7 +213,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/v2' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

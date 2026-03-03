@@ -28,8 +28,13 @@ async function createShare() {
       expireDays: expireDays.value,
       password: password.value,
     })
+    const normalizedShareUrl = data.shareUrl
+      ? data.shareUrl.startsWith('http')
+        ? data.shareUrl
+        : `${window.location.origin}${data.shareUrl}`
+      : `${window.location.origin}/share/${data.shareId}`
     result.value = {
-      shareUrl: data.shareUrl || `${window.location.origin}/share/${data.shareId}`,
+      shareUrl: normalizedShareUrl,
       password: data.password,
       expireAt: data.expireAt,
     }

@@ -35,7 +35,7 @@ func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadReques
 }
 
 func (s *FileService) UploadChunk(ctx context.Context, req *pb.UploadChunkRequest) (*pb.UploadChunkReply, error) {
-	err := s.uc.SaveChunk(ctx, req.FileMd5, req.ChunkIndex, int64(req.ChunkSize))
+	err := s.uc.SaveChunk(ctx, req.FileMd5, req.ChunkIndex, int64(req.ChunkSize), req.ChunkData)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (s *FileService) UploadChunk(ctx context.Context, req *pb.UploadChunkReques
 }
 
 func (s *FileService) MergeChunks(ctx context.Context, req *pb.MergeChunksRequest) (*pb.MergeChunksReply, error) {
-	file, err := s.uc.MergeChunks(ctx, req.UserId, req.ParentId, req.FileName, req.FileMd5, req.FileSize)
+	file, err := s.uc.MergeChunks(ctx, req.UserId, req.ParentId, req.FileName, req.FileMd5, req.FileSize, req.TotalChunks)
 	if err != nil {
 		return nil, err
 	}
@@ -74,10 +74,13 @@ func (s *FileService) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (
 }
 
 func (s *FileService) GetDownloadURL(ctx context.Context, req *pb.GetDownloadURLRequest) (*pb.GetDownloadURLReply, error) {
-	// TODO: Generate download URL from OSS or local storage
+	downloadURL, fileName, err := s.uc.GetDownloadURL(ctx, req.UserId, req.FileId)
+	if err != nil {
+		return nil, err
+	}
 	return &pb.GetDownloadURLReply{
-		DownloadUrl: "",
-		FileName:    "",
+		DownloadUrl: downloadURL,
+		FileName:    fileName,
 	}, nil
 }
 
@@ -168,7 +171,7 @@ func (s *FileService) CreateShare(ctx context.Context, req *pb.CreateShareReques
 
 	return &pb.CreateShareReply{
 		ShareId:  share.ID,
-		ShareUrl: "/s/" + share.ID,
+		ShareUrl: "/share/" + share.ID,
 		Password: share.Password,
 		ExpireAt: expireAt,
 	}, nil

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 
@@ -12,10 +13,12 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/user/internal/biz"
 )
 
+var ErrJWTSecretNotConfigured = errors.New("JWT_SECRET is not configured")
+
 func generateJWT(userID int64) (string, int64, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "default-jwt-secret"
+		return "", 0, ErrJWTSecretNotConfigured
 	}
 	expireAt := time.Now().Add(24 * time.Hour).Unix()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{

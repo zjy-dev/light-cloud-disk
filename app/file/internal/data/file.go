@@ -2,8 +2,14 @@ package data
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
@@ -124,16 +130,18 @@ func (r *fileRepo) Update(ctx context.Context, file *biz.File) error {
 	}).Error
 }
 
-func (r *fileRepo) SoftDelete(ctx context.Context, ids []int64) error {
-	return r.data.db.WithContext(ctx).Delete(&FilePO{}, ids).Error
+func (r *fileRepo) SoftDelete(ctx context.Context, userID int64, ids []int64) error {
+	return r.data.db.WithContext(ctx).Where("user_id = ? AND id IN ?", userID, ids).Delete(&FilePO{}).Error
 }
 
-func (r *fileRepo) Restore(ctx context.Context, ids []int64) error {
-	return r.data.db.WithContext(ctx).Unscoped().Model(&FilePO{}).Where("id IN ?", ids).Update("deleted_at", nil).Error
+func (r *fileRepo) Restore(ctx context.Context, userID int64, ids []int64) error {
+	return r.data.db.WithContext(ctx).Unscoped().Model(&FilePO{}).
+		Where("user_id = ? AND id IN ?", userID, ids).
+		Update("deleted_at", nil).Error
 }
 
-func (r *fileRepo) PermanentDelete(ctx context.Context, ids []int64) error {
-	return r.data.db.WithContext(ctx).Unscoped().Delete(&FilePO{}, ids).Error
+func (r *fileRepo) PermanentDelete(ctx context.Context, userID int64, ids []int64) error {
+	return r.data.db.WithContext(ctx).Unscoped().Where("user_id = ? AND id IN ?", userID, ids).Delete(&FilePO{}).Error
 }
 
 func (r *fileRepo) FindTrash(ctx context.Context, userID int64, page, pageSize int32) ([]*biz.File, int64, error) {
@@ -250,16 +258,100 @@ func (r *fileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int
 
 	var chunks []int32
 	json.Unmarshal(data, &chunks)
+	sort.Slice(chunks, func(i, j int) bool { return chunks[i] < chunks[j] })
 	return chunks, nil
+}
+
+func chunkRootDir() string {
+	if v := os.Getenv("FILE_TMP_DIR"); v != "" {
+		return v
+	}
+	return "/tmp/light-cloud-disk/chunks"
+}
+
+func storeRootDir() string {
+	if v := os.Getenv("FILE_STORE_DIR"); v != "" {
+		return v
+	}
+	return "/tmp/light-cloud-disk/store"
+}
+
+func (r *fileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error {
+	_ = ctx
+	chunkDir := filepath.Join(chunkRootDir(), fileMD5)
+	if err := os.MkdirAll(chunkDir, 0o755); err != nil {
+		return err
+	}
+
+	chunkPath := filepath.Join(chunkDir, fmt.Sprintf("%06d.part", chunkIndex))
+	return os.WriteFile(chunkPath, data, 0o644)
+}
+
+func (r *fileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error) {
+	_ = ctx
+
+	chunkDir := filepath.Join(chunkRootDir(), fileMD5)
+	if err := os.MkdirAll(storeRootDir(), 0o755); err != nil {
+		return "", err
+	}
+
+	ext := filepath.Ext(fileName)
+	if ext == "" {
+		ext = ".bin"
+	}
+	storePath := filepath.Join(storeRootDir(), fileMD5+ext)
+
+	out, err := os.Create(storePath)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	hasher := md5.New()
+	multiWriter := io.MultiWriter(out, hasher)
+
+	for i := int32(0); i < totalChunks; i++ {
+		partPath := filepath.Join(chunkDir, fmt.Sprintf("%06d.part", i))
+		part, err := os.Open(partPath)
+		if err != nil {
+			return "", err
+		}
+		if _, err := io.Copy(multiWriter, part); err != nil {
+			part.Close()
+			return "", err
+		}
+		part.Close()
+	}
+
+	actualMD5 := hex.EncodeToString(hasher.Sum(nil))
+	if actualMD5 != fileMD5 {
+		_ = os.Remove(storePath)
+		return "", fmt.Errorf("merged file md5 mismatch: expected %s, got %s", fileMD5, actualMD5)
+	}
+
+	if err := os.RemoveAll(chunkDir); err != nil {
+		r.log.Warnf("failed to remove chunk dir %s: %v", chunkDir, err)
+	}
+
+	return storePath, nil
 }
 
 func (r *fileRepo) SaveChunkInfo(ctx context.Context, chunk *biz.ChunkInfo) error {
 	key := fmt.Sprintf("upload:%s:chunks", chunk.FileMD5)
 
 	chunks, _ := r.GetUploadedChunks(ctx, chunk.FileMD5)
-	chunks = append(chunks, chunk.ChunkIndex)
+	chunkSet := make(map[int32]struct{}, len(chunks)+1)
+	for _, v := range chunks {
+		chunkSet[v] = struct{}{}
+	}
+	chunkSet[chunk.ChunkIndex] = struct{}{}
 
-	data, _ := json.Marshal(chunks)
+	merged := make([]int32, 0, len(chunkSet))
+	for v := range chunkSet {
+		merged = append(merged, v)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i] < merged[j] })
+
+	data, _ := json.Marshal(merged)
 	return r.data.redis.Set(ctx, key, data, 24*time.Hour).Err()
 }
 

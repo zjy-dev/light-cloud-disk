@@ -74,7 +74,7 @@ services:
       - cloud-disk
 
   kafka:
-    image: docker.io/apache/kafka:latest
+    image: docker.io/apache/kafka:3.6.2
     container_name: cloud-disk-kafka
     environment:
       KAFKA_NODE_ID: 1
@@ -166,6 +166,9 @@ services:
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
       OSS_BUCKET_NAME: ${OSS_BUCKET_NAME:-}
+      FILE_TMP_DIR: /app/tmp
+      FILE_STORE_DIR: /app/store
+      DOWNLOAD_URL_PREFIX: ${DOWNLOAD_URL_PREFIX:-http://localhost:8080/downloads}
       NO_PROXY: "*"
       no_proxy: "*"
       HTTP_PROXY: ""
@@ -208,6 +211,8 @@ services:
       https_proxy: ""
     ports:
       - "8080:8080"
+    volumes:
+      - file_storage:/app/store:ro
     depends_on:
       consul:
         condition: service_healthy
@@ -234,7 +239,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - gateway
+      gateway:
+        condition: service_started
     networks:
       - cloud-disk
 
