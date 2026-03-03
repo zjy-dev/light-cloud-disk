@@ -1,1 +1,30 @@
 docs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+bin/
+
+# Temp
+tmp/
+store/
+*.log
+coverage.out

@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Typography ── */
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-display: "Outfit", system-ui, sans-serif;
+
+  /* ── Light palette (sky-blue) ── */
+  --color-surface: #f0f7ff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-hover: #e4f0fd;
+  --color-surface-active: #d6e8fb;
+  --color-border: #c7ddf3;
+  --color-border-subtle: #e0edfa;
+  --color-text-primary: #0f2440;
+  --color-text-secondary: #4a6a8a;
+  --color-text-tertiary: #7a9abb;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-soft: #dbeafe;
+  --color-accent-text: #ffffff;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fee2e2;
+  --color-success: #16a34a;
+  --color-success-soft: #dcfce7;
+  --color-warning: #d97706;
+  --color-warning-soft: #fef3c7;
+  --color-sidebar: #ffffff;
+  --color-sidebar-active: #eff6ff;
+  --color-overlay: rgba(15, 36, 64, 0.4);
+
+  /* ── Radius ── */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+
+  /* ── Shadows ── */
+  --shadow-card: 0 1px 3px rgba(37, 99, 235, 0.06), 0 1px 2px rgba(37, 99, 235, 0.04);
+  --shadow-card-hover: 0 4px 12px rgba(37, 99, 235, 0.1), 0 2px 4px rgba(37, 99, 235, 0.06);
+  --shadow-dropdown: 0 8px 24px rgba(37, 99, 235, 0.12), 0 2px 8px rgba(37, 99, 235, 0.06);
+  --shadow-modal: 0 20px 60px rgba(15, 36, 64, 0.2), 0 4px 16px rgba(15, 36, 64, 0.08);
+}
+
+/* ── Dark theme overrides ── */
+.dark {
+  --color-surface: #0b1120;
+  --color-surface-elevated: #131c2e;
+  --color-surface-hover: #1a2540;
+  --color-surface-active: #213050;
+  --color-border: #1e2d45;
+  --color-border-subtle: #162236;
+  --color-text-primary: #e8f0fc;
+  --color-text-secondary: #8ba3c4;
+  --color-text-tertiary: #546d8f;
+  --color-accent: #60a5fa;
+  --color-accent-hover: #93c5fd;
+  --color-accent-soft: rgba(96, 165, 250, 0.15);
+  --color-accent-text: #0b1120;
+  --color-danger: #f87171;
+  --color-danger-soft: rgba(248, 113, 113, 0.15);
+  --color-success: #4ade80;
+  --color-success-soft: rgba(74, 222, 128, 0.15);
+  --color-warning: #fbbf24;
+  --color-warning-soft: rgba(251, 191, 36, 0.15);
+  --color-sidebar: #0f1829;
+  --color-sidebar-active: rgba(96, 165, 250, 0.1);
+  --color-overlay: rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.6), 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Base styles ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* ── Transitions ── */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-fade-enter-active {
+  transition: all 0.25s ease-out;
+}
+.slide-fade-leave-active {
+  transition: all 0.2s ease-in;
+}
+.slide-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.slide-right-enter-active {
+  transition: all 0.25s ease-out;
+}
+.slide-right-leave-active {
+  transition: all 0.2s ease-in;
+}
+.slide-right-enter-from {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.slide-right-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+/* ── Focus ring ── */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

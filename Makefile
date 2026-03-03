@@ -111,8 +111,37 @@ run-file:
 run-gateway:
 	go run ./app/gateway/cmd
 
+# ─── Frontend ───────────────────────────────────────────────
+
+.PHONY: fe-install
+# Install frontend dependencies
+fe-install:
+	cd frontend && pnpm install
+
+.PHONY: fe-dev
+# Start frontend dev server
+fe-dev:
+	cd frontend && pnpm dev
+
+.PHONY: fe-build
+# Build frontend for production
+fe-build:
+	cd frontend && pnpm build
+
+.PHONY: fe-test
+# Run frontend unit tests
+fe-test:
+	cd frontend && pnpm test
+
+.PHONY: fe-lint
+# Lint frontend code
+fe-lint:
+	cd frontend && pnpm lint
+
+# ─── Full build ─────────────────────────────────────────────
+
 .PHONY: all
-all: api conf wire build
+all: api conf wire build fe-build
 
 # Container runtime detection (prefer podman)
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)

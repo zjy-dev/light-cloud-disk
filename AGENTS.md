@@ -171,3 +171,104 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 3. **Consul 服务发现**: 使用 Kratos 的 `kratos.Registrar()` 注册，客户端使用 `discovery:///service-name` 端点。
 4. **跨服务调用**: File Service 定义 `biz.UserClient` 接口，由 `data/user_client.go` 通过 gRPC 实现，解耦业务逻辑和远程调用。
 5. **Wire 依赖注入**: 每个 Kratos 服务使用独立的 `wire.go`，Gateway 不使用 Wire (直接构造)。
+6. **Monorepo 结构**: 后端留在根目录（避免破坏 Go module 路径），前端位于 `frontend/` 目录。
+
+## 前端架构
+
+### 技术栈
+- **框架**: Vue 3.5 + TypeScript 5.9 (Composition API + `<script setup>`)
+- **构建**: Vite 7 + vue-tsc
+- **样式**: Tailwind CSS v4 (`@theme` CSS 变量，非 tailwind.config.js)
+- **状态管理**: Pinia 3
+- **路由**: Vue Router 5 (History mode, lazy-loaded routes)
+- **HTTP**: Axios (JWT interceptor, 401 auto-redirect)
+- **图标**: lucide-vue-next
+- **工具**: @vueuse/core (theme persistence, system preference detection)
+- **包管理**: pnpm
+
+### 目录结构
+
+```
+frontend/
+├── src/
+│   ├── api/            # Axios 客户端 + 按领域拆分的 API 模块
+│   │   ├── client.ts   # Axios 实例 (baseURL, JWT interceptor)
+│   │   ├── user.ts     # 用户相关 API
+│   │   └── file.ts     # 文件/回收站/分享 API
+│   ├── composables/    # Vue 组合式函数
+│   │   ├── useTheme.ts # 主题切换 (light/dark/system)
+│   │   └── useUpload.ts # 分块上传 (MD5/秒传/断点续传)
+│   ├── components/
+│   │   ├── layout/     # 布局组件 (AppLayout, AppSidebar, AppHeader)
+│   │   ├── ui/         # 通用 UI (ThemeToggle, BaseModal)
+│   │   └── file/       # 文件相关 (FileBreadcrumb, FileToolbar, FileItem, UploadProgress, ShareDialog)
+│   ├── stores/         # Pinia 状态管理
+│   │   ├── auth.ts     # 认证 (login/register/logout/profile)
+│   │   └── file.ts     # 文件 (CRUD, navigation, sorting, selection)
+│   ├── views/          # 页面组件
+│   │   ├── LoginView.vue
+│   │   ├── RegisterView.vue
+│   │   ├── FileBrowserView.vue
+│   │   ├── TrashView.vue
+│   │   ├── ProfileView.vue
+│   │   └── SharePublicView.vue
+│   ├── router/         # Vue Router 配置 + auth guard
+│   ├── types/          # TypeScript 接口定义 (对齐 proto)
+│   ├── style.css       # Tailwind v4 主题 (light/dark CSS 变量)
+│   ├── App.vue         # 根组件
+│   └── main.ts         # 入口
+├── vite.config.ts      # Vite 配置 (Tailwind 插件, 路径别名, API 代理)
+└── package.json
+```
+
+### 主题系统
+
+双主题方案，使用 CSS 自定义属性 + Tailwind v4 `@theme`:
+
+| 模式 | 背景色 | 强调色 | 文字色 |
+|------|--------|--------|--------|
+| Light | #f0f7ff (sky-blue) | #2563eb (blue-600) | #0f172a (slate-900) |
+| Dark | #0b1120 (navy) | #60a5fa (blue-400) | #e2e8f0 (slate-200) |
+
+### 前端功能清单
+
+- [x] 用户认证 (登录/注册/登出/JWT 自动续期)
+- [x] 文件浏览 (网格/列表视图切换, 排序, 面包屑导航)
+- [x] 文件操作 (新建文件夹, 重命名, 删除, 移动, 下载)
+- [x] 分块上传 (MD5 秒传, 断点续传, 进度显示)
+- [x] 回收站管理 (列表, 恢复, 永久删除)
+- [x] 文件分享 (创建分享链接, 密码保护, 有效期)
+- [x] 公开分享页 (无需登录访问)
+- [x] 主题切换 (浅色/深色/跟随系统)
+- [x] 文件搜索
+- [x] 用户资料编辑
+- [x] 存储用量显示
+
+### 前端服务清单
+
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| API Client | src/api/client.ts | Axios 实例, JWT interceptor, 401 处理 |
+| User API | src/api/user.ts | register, login, getUserInfo, updateUserInfo |
+| File API | src/api/file.ts | 20 个文件操作端点 |
+| Auth Store | src/stores/auth.ts | 认证状态, login/register/logout/fetchUserInfo |
+| File Store | src/stores/file.ts | 文件列表, 导航, 排序, 选择, CRUD |
+| useTheme | src/composables/useTheme.ts | 主题切换 + localStorage 持久化 |
+| useUpload | src/composables/useUpload.ts | 分块上传, MD5 计算, 进度追踪 |
+
+### 前端测试策略
+
+| 模块 | 测试类型 | 说明 |
+|------|----------|------|
+| stores/auth | 单元测试 | Mock API, 测试 login/register/logout 流程 |
+| stores/file | 单元测试 | Mock API, 测试 CRUD/导航/排序/选择 |
+| composables/useTheme | 单元测试 | Mock DOM classList, 测试主题切换逻辑 |
+| composables/useUpload | 单元测试 | Mock API + crypto, 测试上传流程 |
+| router | 单元测试 | 测试 auth guard 重定向逻辑 |
+
+运行前端测试:
+```bash
+cd frontend && pnpm test            # 运行所有单元测试
+cd frontend && pnpm test:coverage   # 运行测试 + 覆盖率报告
+cd frontend && pnpm build           # TypeScript 类型检查 + 构建
+```

@@ -3,7 +3,9 @@
 [![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
 [![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
 
-基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。
+基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
+
+**Monorepo 结构**: 后端 Go 代码在项目根目录，前端 Vue 3 SPA 在 `frontend/` 目录。
 
 ## 架构概览
 
@@ -38,8 +40,9 @@
 
 | 组件 | 技术选型 | 版本 |
 |------|----------|------|
+| **后端** | | |
 | 微服务框架 | Kratos | v2.9.2 |
-| API 网关 | Gin | v1.10+ |
+| API 网关 | Gin | v1.12 |
 | 服务发现 | Consul | 1.19 |
 | 通信协议 | gRPC (服务间) + HTTP (客户端) | - |
 | ORM | GORM | v1.25.12 |
@@ -48,6 +51,16 @@
 | 依赖注入 | Wire | v0.6.0 |
 | 认证 | JWT (golang-jwt/jwt v5) | v5 |
 | 容器编排 | Docker/Podman Compose | - |
+| **前端** | | |
+| 框架 | Vue 3 (Composition API) | v3.5 |
+| 构建工具 | Vite | v7.3 |
+| 语言 | TypeScript | v5.9 |
+| 样式 | Tailwind CSS | v4.2 |
+| 状态管理 | Pinia | v3.0 |
+| 路由 | Vue Router | v5.0 |
+| HTTP 客户端 | Axios | v1.13 |
+| 图标 | Lucide Vue Next | latest |
+| 包管理器 | pnpm | v10+ |
 
 ## 功能特性
 
@@ -79,6 +92,20 @@
 
 ```
 .
+├── frontend/                     # 前端 (Vue 3 SPA)
+│   ├── src/
+│   │   ├── api/                 # API 客户端 (Axios)
+│   │   ├── components/          # 组件
+│   │   │   ├── layout/         # 布局 (Sidebar, Header)
+│   │   │   ├── file/           # 文件相关组件
+│   │   │   └── ui/             # 通用 UI 组件
+│   │   ├── composables/         # Vue Composables
+│   │   ├── router/              # Vue Router
+│   │   ├── stores/              # Pinia 状态管理
+│   │   ├── types/               # TypeScript 类型
+│   │   └── views/               # 页面视图
+│   ├── vite.config.ts
+│   └── package.json
 ├── api/                          # Protobuf API 定义
 │   ├── user/v1/                 # 用户服务 proto + 生成代码
 │   └── file/v1/                 # 文件服务 proto + 生成代码
@@ -120,6 +147,8 @@
 
 ### 环境准备
 - Go 1.25+
+- Node.js 24+ (推荐用 fnm 管理)
+- pnpm 10+
 - MySQL 8.0+
 - Redis 7+
 - Consul 1.19+
@@ -145,13 +174,23 @@ cp .env.example .env
 # 编辑 .env 填入实际配置
 ```
 
-### 本地运行 (需先启动基础设施)
+### 前端安装与运行
+```bash
+cd frontend
+pnpm install        # 安装依赖
+pnpm dev            # 启动开发服务器 (http://localhost:3000)
+pnpm build          # 构建生产版本
+```
+
+### 本地运行后端 (需先启动基础设施)
 ```bash
 make infra-up       # 启动 MySQL + Redis + Consul + Kafka
 make run-user       # 启动用户服务 (gRPC :9001)
 make run-file       # 启动文件服务 (gRPC :9002)
 make run-gateway    # 启动 API 网关 (HTTP :8080)
 ```
+
+> 前端开发服务器会自动代理 `/api` 请求到 `localhost:8080` (Gateway)。
 
 ### 容器化运行
 ```bash
@@ -252,14 +291,38 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag) |
 
+## 前端功能
+
+- 登录 / 注册页面
+- 文件浏览器 (网格/列表双视图，排序，面包屑导航)
+- 文件上传 (分块上传，进度面板，秒传/断点续传)
+- 文件管理 (新建文件夹、重命名、删除、移动、下载)
+- 回收站 (恢复、彻底删除、清空)
+- 文件分享 (创建分享链接、设密码、过期时间)
+- 公开分享页面 (密码验证、文件下载)
+- 用户资料设置 (昵称、邮箱、存储用量可视化)
+- 深色 / 浅色主题切换 (浅色为天蓝风格，深色为深海军蓝)
+- 响应式布局，可收起侧边栏
+
 ## 文档
 
 - [微服务架构设计](docs/architecture.md)
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
 - [服务发现与通信](docs/service-discovery.md)
+- [前端架构与设计](docs/frontend.md)
 
 ## 更新日志
+
+### v4.0.0 (2026)
+- 新增 Vue 3 前端 (TypeScript + Vite + Tailwind CSS v4)
+- Monorepo 结构 (前后端同仓)
+- 深色/浅色双主题 (浅色天蓝风格)
+- 文件浏览器 (网格/列表视图、搜索、排序)
+- 分块上传进度面板 (支持秒传/断点续传)
+- 文件分享 (创建链接 + 公开访问页)
+- 回收站管理
+- 用户资料设置
 
 ### v3.0.0 (2026)
 - 从伪微服务重构为真正的微服务架构

@@ -1,0 +1,136 @@
+import client from './client'
+import type {
+  CheckUploadReply,
+  CreateShareReply,
+  GetDownloadURLReply,
+  GetShareReply,
+  ListFilesReply,
+  ListTrashReply,
+  MergeChunksReply,
+  SearchFilesReply,
+  UploadChunkReply,
+} from '@/types'
+
+export const fileApi = {
+  listFiles(params: { parentId?: number; page?: number; pageSize?: number }) {
+    return client.get<ListFilesReply>('/files', {
+      params: {
+        parent_id: params.parentId ?? 0,
+        page: params.page ?? 1,
+        page_size: params.pageSize ?? 50,
+      },
+    })
+  },
+
+  searchFiles(params: { keyword: string; page?: number; pageSize?: number }) {
+    return client.get<SearchFilesReply>('/files/search', {
+      params: {
+        keyword: params.keyword,
+        page: params.page ?? 1,
+        page_size: params.pageSize ?? 50,
+      },
+    })
+  },
+
+  createFolder(data: { parentId: number; name: string }) {
+    return client.post<{ success: boolean; folder: { id: number } }>('/file/folder', {
+      parent_id: data.parentId,
+      name: data.name,
+    })
+  },
+
+  renameFile(data: { fileId: number; newName: string }) {
+    return client.put<{ success: boolean }>('/file/rename', {
+      file_id: data.fileId,
+      new_name: data.newName,
+    })
+  },
+
+  deleteFiles(fileIds: number[]) {
+    return client.delete<{ success: boolean }>('/files', {
+      data: { file_ids: fileIds },
+    })
+  },
+
+  moveFiles(data: { fileIds: number[]; targetFolderId: number }) {
+    return client.put<{ success: boolean }>('/file/move', {
+      file_ids: data.fileIds,
+      target_folder_id: data.targetFolderId,
+    })
+  },
+
+  getDownloadURL(fileId: number) {
+    return client.get<GetDownloadURLReply>(`/file/download/${fileId}`)
+  },
+
+  // Upload
+  checkUpload(data: { fileMd5: string; fileSize: number; totalChunks: number }) {
+    return client.post<CheckUploadReply>('/file/check-upload', {
+      file_md5: data.fileMd5,
+      file_size: data.fileSize,
+      total_chunks: data.totalChunks,
+    })
+  },
+
+  uploadChunk(data: { fileMd5: string; chunkIndex: number; chunkSize: number; chunkData: string }) {
+    return client.post<UploadChunkReply>('/file/upload-chunk', {
+      file_md5: data.fileMd5,
+      chunk_index: data.chunkIndex,
+      chunk_size: data.chunkSize,
+      chunk_data: data.chunkData,
+    })
+  },
+
+  mergeChunks(data: {
+    parentId: number
+    fileName: string
+    fileMd5: string
+    fileSize: number
+    totalChunks: number
+  }) {
+    return client.post<MergeChunksReply>('/file/merge-chunks', {
+      parent_id: data.parentId,
+      file_name: data.fileName,
+      file_md5: data.fileMd5,
+      file_size: data.fileSize,
+      total_chunks: data.totalChunks,
+    })
+  },
+
+  // Trash
+  listTrash(params?: { page?: number; pageSize?: number }) {
+    return client.get<ListTrashReply>('/trash', {
+      params: {
+        page: params?.page ?? 1,
+        page_size: params?.pageSize ?? 50,
+      },
+    })
+  },
+
+  restoreFiles(fileIds: number[]) {
+    return client.post<{ success: boolean }>('/trash/restore', {
+      file_ids: fileIds,
+    })
+  },
+
+  permanentDelete(fileIds: number[]) {
+    return client.delete<{ success: boolean }>('/trash', {
+      data: { file_ids: fileIds },
+    })
+  },
+
+  // Share
+  createShare(data: { fileId: number; expireDays: number; password?: string }) {
+    return client.post<CreateShareReply>('/share', {
+      file_id: data.fileId,
+      expire_days: data.expireDays,
+      password: data.password ?? '',
+    })
+  },
+
+  getShare(shareId: string, password?: string) {
+    return client.get<GetShareReply>(`/share/${shareId}`, {
+      params: password ? { password } : undefined,
+    })
+  },
+}

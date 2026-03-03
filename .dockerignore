@@ -5,6 +5,11 @@ dist/
 # Dependencies
 vendor/
 
+# Frontend (exclude from backend image builds)
+frontend/node_modules/
+frontend/coverage/
+frontend/.vscode/
+
 # IDE
 .idea/
 .vscode/

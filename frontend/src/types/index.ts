@@ -1,0 +1,93 @@
+export interface UserInfo {
+  id: number
+  username: string
+  nickname: string
+  email: string
+  avatar: string
+  storageUsed: number
+  storageLimit: number
+  createdAt: number
+}
+
+export interface LoginReply {
+  token: string
+  expireAt: number
+  user: UserInfo
+}
+
+export interface RegisterReply {
+  userId: number
+  username: string
+}
+
+export interface FileInfo {
+  id: number
+  name: string
+  fileMd5: string
+  size: number
+  isFolder: boolean
+  parentId: number
+  path: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface TrashFileInfo {
+  id: number
+  name: string
+  size: number
+  isFolder: boolean
+  deletedAt: number
+  expireAt: number
+}
+
+export interface CheckUploadReply {
+  canFastUpload: boolean
+  uploadedChunks: number[]
+}
+
+export interface UploadChunkReply {
+  success: boolean
+  chunkIndex: number
+}
+
+export interface MergeChunksReply {
+  success: boolean
+  file: FileInfo
+}
+
+export interface CreateShareReply {
+  shareId: string
+  shareUrl: string
+  password: string
+  expireAt: number
+}
+
+export interface GetShareReply {
+  file: FileInfo
+  downloadUrl: string
+}
+
+export interface ListFilesReply {
+  files: FileInfo[]
+  total: number
+}
+
+export interface ListTrashReply {
+  files: TrashFileInfo[]
+  total: number
+}
+
+export interface SearchFilesReply {
+  files: FileInfo[]
+  total: number
+}
+
+export interface GetDownloadURLReply {
+  downloadUrl: string
+  fileName: string
+}
+
+export type ViewMode = 'grid' | 'list'
+export type SortField = 'name' | 'size' | 'updatedAt'
+export type SortOrder = 'asc' | 'desc'
