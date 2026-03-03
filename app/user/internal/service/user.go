@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/golang-jwt/jwt/v5"
 
 	pb "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/user/internal/biz"

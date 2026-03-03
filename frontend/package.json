@@ -12,10 +12,12 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@types/spark-md5": "^3.0.5",
     "@vueuse/core": "^14.2.1",
     "axios": "^1.13.6",
     "lucide-vue-next": "^0.576.0",
     "pinia": "^3.0.4",
+    "spark-md5": "^3.0.2",
     "vue": "^3.5.25",
     "vue-router": "^5.0.3"
   },

@@ -1,7 +1,9 @@
 import { ref, computed } from 'vue'
+import SparkMD5 from 'spark-md5'
 import { fileApi } from '@/api/file'
 
-const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB
+const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB per upload chunk
+const HASH_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB per hash chunk (smaller = more responsive)
 
 export interface UploadTask {
   id: string
@@ -17,11 +19,26 @@ const tasks = ref<UploadTask[]>([])
 export function useUpload() {
   const isUploading = computed(() => tasks.value.some((t) => ['hashing', 'uploading', 'merging'].includes(t.status)))
 
-  async function computeMd5(file: File): Promise<string> {
-    const buffer = await file.arrayBuffer()
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
+  /**
+   * Compute MD5 hash of a file in 2MB chunks using spark-md5.
+   * Chunked reading prevents browser freeze on large files and allows progress reporting.
+   * onProgress receives a value in [0, 1].
+   */
+  async function computeMd5(file: File, onProgress?: (pct: number) => void): Promise<string> {
+    const spark = new SparkMD5.ArrayBuffer()
+    const totalChunks = Math.ceil(file.size / HASH_CHUNK_SIZE)
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * HASH_CHUNK_SIZE
+      const slice = file.slice(start, Math.min(start + HASH_CHUNK_SIZE, file.size))
+      const buffer = await slice.arrayBuffer()
+      spark.append(buffer)
+      onProgress?.((i + 1) / totalChunks)
+      // Yield to event loop between chunks so Vue reactivity can update the UI
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+
+    return spark.end()
   }
 
   function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -45,8 +62,10 @@ export function useUpload() {
     tasks.value.push(task)
 
     try {
-      // Compute hash
-      const fileMd5 = await computeMd5(file)
+      // Compute MD5 hash in chunks — updates task.progress from 0→15 while hashing
+      const fileMd5 = await computeMd5(file, (pct) => {
+        task.progress = Math.round(pct * 15)
+      })
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
       // Check for instant upload

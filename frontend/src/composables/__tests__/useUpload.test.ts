@@ -8,12 +8,27 @@ vi.mock('@/api/file', () => ({
   },
 }))
 
+vi.mock('spark-md5', () => ({
+  default: {
+    ArrayBuffer: class {
+      append(_buf: ArrayBuffer) {}
+      end() { return 'mockedmd5hashvalue' }
+    },
+  },
+}))
+
 import { fileApi } from '@/api/file'
 
 describe('useUpload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.resetModules()
+
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { randomUUID: () => 'test-uuid-' + Math.random().toString(36).slice(2) },
+      writable: true,
+      configurable: true,
+    })
   })
 
   it('exports tasks and isUploading', async () => {
@@ -32,14 +47,10 @@ describe('useUpload', () => {
       data: { success: true, file: { id: 1 } },
     } as never)
 
-    // Mock crypto.subtle.digest
-    const mockDigest = vi.fn().mockResolvedValue(new ArrayBuffer(32))
     Object.defineProperty(globalThis, 'crypto', {
-      value: {
-        subtle: { digest: mockDigest },
-        randomUUID: () => 'test-uuid-123',
-      },
+      value: { randomUUID: () => 'test-uuid-123' },
       writable: true,
+      configurable: true,
     })
 
     const { useUpload } = await import('@/composables/useUpload')
@@ -69,13 +80,10 @@ describe('useUpload', () => {
       data: { success: true, file: { id: 2 } },
     } as never)
 
-    const mockDigest = vi.fn().mockResolvedValue(new ArrayBuffer(32))
     Object.defineProperty(globalThis, 'crypto', {
-      value: {
-        subtle: { digest: mockDigest },
-        randomUUID: () => 'test-uuid-456',
-      },
+      value: { randomUUID: () => 'test-uuid-456' },
       writable: true,
+      configurable: true,
     })
 
     const { useUpload } = await import('@/composables/useUpload')
@@ -94,13 +102,10 @@ describe('useUpload', () => {
   it('uploadFile handles errors', async () => {
     vi.mocked(fileApi.checkUpload).mockRejectedValue(new Error('network error'))
 
-    const mockDigest = vi.fn().mockResolvedValue(new ArrayBuffer(32))
     Object.defineProperty(globalThis, 'crypto', {
-      value: {
-        subtle: { digest: mockDigest },
-        randomUUID: () => 'test-uuid-789',
-      },
+      value: { randomUUID: () => 'test-uuid-789' },
       writable: true,
+      configurable: true,
     })
 
     const { useUpload } = await import('@/composables/useUpload')
@@ -117,11 +122,9 @@ describe('useUpload', () => {
 
   it('removeTask removes a task by ID', async () => {
     Object.defineProperty(globalThis, 'crypto', {
-      value: {
-        subtle: { digest: vi.fn().mockResolvedValue(new ArrayBuffer(32)) },
-        randomUUID: () => 'removable-task',
-      },
+      value: { randomUUID: () => 'removable-task' },
       writable: true,
+      configurable: true,
     })
 
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
@@ -144,11 +147,9 @@ describe('useUpload', () => {
 
   it('clearCompleted removes done and error tasks', async () => {
     Object.defineProperty(globalThis, 'crypto', {
-      value: {
-        subtle: { digest: vi.fn().mockResolvedValue(new ArrayBuffer(32)) },
-        randomUUID: () => 'clear-test-' + Math.random(),
-      },
+      value: { randomUUID: () => 'clear-test-' + Math.random() },
       writable: true,
+      configurable: true,
     })
 
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
