@@ -2,8 +2,8 @@
 bin/
 dist/
 
-# Dependencies
-vendor/
+# Dependencies (vendor IS included for offline builds)
+# vendor/
 
 # Frontend (exclude from backend image builds)
 frontend/node_modules/

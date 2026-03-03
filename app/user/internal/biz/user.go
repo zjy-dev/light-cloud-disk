@@ -33,6 +33,7 @@ type UserRepo interface {
 	FindByID(ctx context.Context, id int64) (*User, error)
 	Update(ctx context.Context, user *User) error
 	UpdateStorageUsed(ctx context.Context, userID int64, delta int64) error
+	CheckPassword(ctx context.Context, user *User, rawPassword string) error
 }
 
 type UserUsecase struct {
@@ -70,9 +71,8 @@ func (uc *UserUsecase) Login(ctx context.Context, username, password string) (*U
 		return nil, ErrUserNotFound
 	}
 
-	// Password comparison is done at the data layer (bcrypt)
-	// The repo returns hashed password; we pass raw password to a dedicated method
-	if user.Password != password {
+	// Password verification is delegated to the repo layer which handles bcrypt comparison
+	if err := uc.repo.CheckPassword(ctx, user, password); err != nil {
 		return nil, ErrInvalidPassword
 	}
 

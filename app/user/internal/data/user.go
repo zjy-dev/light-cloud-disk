@@ -98,6 +98,10 @@ func (r *userRepo) UpdateStorageUsed(ctx context.Context, userID int64, delta in
 		UpdateColumn("storage_used", gorm.Expr("storage_used + ?", delta)).Error
 }
 
+func (r *userRepo) CheckPassword(ctx context.Context, user *biz.User, rawPassword string) error {
+	return bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(rawPassword))
+}
+
 func (r *userRepo) poToDomain(po *UserPO) *biz.User {
 	return &biz.User{
 		ID:           po.ID,

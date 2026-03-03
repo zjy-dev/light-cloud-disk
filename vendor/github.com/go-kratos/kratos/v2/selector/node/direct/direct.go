@@ -1,0 +1,56 @@
+package direct
+
+import (
+	"context"
+	"sync/atomic"
+	"time"
+
+	"github.com/go-kratos/kratos/v2/selector"
+)
+
+const (
+	defaultWeight = 100
+)
+
+var (
+	_ selector.WeightedNode        = (*Node)(nil)
+	_ selector.WeightedNodeBuilder = (*Builder)(nil)
+)
+
+// Node is endpoint instance
+type Node struct {
+	selector.Node
+
+	// last lastPick timestamp
+	lastPick atomic.Int64
+}
+
+// Builder is direct node builder
+type Builder struct{}
+
+// Build create node
+func (*Builder) Build(n selector.Node) selector.WeightedNode {
+	return &Node{Node: n, lastPick: atomic.Int64{}}
+}
+
+func (n *Node) Pick() selector.DoneFunc {
+	now := time.Now().UnixNano()
+	n.lastPick.Store(now)
+	return func(context.Context, selector.DoneInfo) {}
+}
+
+// Weight is node effective weight
+func (n *Node) Weight() float64 {
+	if n.InitialWeight() != nil {
+		return float64(*n.InitialWeight())
+	}
+	return defaultWeight
+}
+
+func (n *Node) PickElapsed() time.Duration {
+	return time.Duration(time.Now().UnixNano() - n.lastPick.Load())
+}
+
+func (n *Node) Raw() selector.Node {
+	return n.Node
+}

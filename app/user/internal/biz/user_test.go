@@ -50,6 +50,11 @@ func (m *MockUserRepo) UpdateStorageUsed(ctx context.Context, userID int64, delt
 	return args.Error(0)
 }
 
+func (m *MockUserRepo) CheckPassword(ctx context.Context, user *User, rawPassword string) error {
+	args := m.Called(ctx, user, rawPassword)
+	return args.Error(0)
+}
+
 func newTestUserUsecase(repo *MockUserRepo) *UserUsecase {
 	return NewUserUsecase(repo, log.DefaultLogger)
 }
@@ -95,11 +100,13 @@ func TestLogin_Success(t *testing.T) {
 	uc := newTestUserUsecase(repo)
 	ctx := context.Background()
 
-	repo.On("FindByUsername", ctx, "alice").Return(&User{
+	foundUser := &User{
 		ID:       1,
 		Username: "alice",
-		Password: "password123",
-	}, nil)
+		Password: "$2a$10$hashedpassword",
+	}
+	repo.On("FindByUsername", ctx, "alice").Return(foundUser, nil)
+	repo.On("CheckPassword", ctx, foundUser, "password123").Return(nil)
 
 	user, err := uc.Login(ctx, "alice", "password123")
 
@@ -127,11 +134,13 @@ func TestLogin_InvalidPassword(t *testing.T) {
 	uc := newTestUserUsecase(repo)
 	ctx := context.Background()
 
-	repo.On("FindByUsername", ctx, "alice").Return(&User{
+	foundUser := &User{
 		ID:       1,
 		Username: "alice",
-		Password: "correctpass",
-	}, nil)
+		Password: "$2a$10$hashedpassword",
+	}
+	repo.On("FindByUsername", ctx, "alice").Return(foundUser, nil)
+	repo.On("CheckPassword", ctx, foundUser, "wrongpass").Return(errors.New("crypto/bcrypt: hashedPassword is not the hash of the given password"))
 
 	user, err := uc.Login(ctx, "alice", "wrongpass")
 

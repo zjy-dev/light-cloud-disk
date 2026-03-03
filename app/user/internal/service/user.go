@@ -2,12 +2,29 @@ package service
 
 import (
 	"context"
+	"os"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/go-kratos/kratos/v2/log"
 
 	pb "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/user/internal/biz"
 )
+
+func generateJWT(userID int64) (string, int64, error) {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "default-jwt-secret"
+	}
+	expireAt := time.Now().Add(24 * time.Hour).Unix()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": userID,
+		"exp":     expireAt,
+	})
+	signed, err := token.SignedString([]byte(secret))
+	return signed, expireAt, err
+}
 
 type UserService struct {
 	pb.UnimplementedUserServiceServer
@@ -40,12 +57,14 @@ func (s *UserService) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Logi
 		return nil, err
 	}
 
-	// TODO: Generate JWT token
-	token := "jwt_token_placeholder"
+	token, expireAt, err := generateJWT(user.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &pb.LoginReply{
 		Token:    token,
-		ExpireAt: 0,
+		ExpireAt: expireAt,
 		User: &pb.UserInfo{
 			Id:           user.ID,
 			Username:     user.Username,
