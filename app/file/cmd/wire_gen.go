@@ -27,11 +27,17 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger log.Logger, re
 	}
 	fileRepo := data.NewFileRepo(dataData, logger)
 	userClient := data.NewUserClient(userServiceClient, logger)
-	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, logger)
+	messageProducer, cleanup2, err := data.NewKafkaProducer(confData, logger)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, logger)
 	fileService := service.NewFileService(fileUsecase, logger)
 	grpcServer := server.NewGRPCServer(confServer, fileService, logger)
 	app := newApp(logger, grpcServer, registry)
 	return app, func() {
+		cleanup2()
 		cleanup()
 	}, nil
 }

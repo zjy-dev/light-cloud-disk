@@ -12,6 +12,11 @@ data:
   redis:
     read_timeout: 0.2s
     write_timeout: 0.2s
+  kafka:
+    brokers:
+      - ${KAFKA_BROKERS:localhost:9092}
+    transfer_topic: file-transfer
+    thumbnail_topic: file-thumbnail
 
 upload:
   chunk_size: 5242880  # 5MB

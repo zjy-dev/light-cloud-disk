@@ -66,7 +66,7 @@ wire-file:
 
 .PHONY: build
 # Build all services
-build: build-user build-file build-gateway
+build: build-user build-file build-gateway build-worker
 
 .PHONY: build-user
 # Build user service
@@ -77,6 +77,11 @@ build-user:
 # Build file service
 build-file:
 	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/file-service ./app/file/cmd
+
+.PHONY: build-worker
+# Build file worker
+build-worker:
+	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/file-worker ./app/file/cmd/worker
 
 .PHONY: build-gateway
 # Build gateway
@@ -110,6 +115,11 @@ run-file:
 # Run gateway locally
 run-gateway:
 	go run ./app/gateway/cmd
+
+.PHONY: run-worker
+# Run file worker locally
+run-worker:
+	go run ./app/file/cmd/worker
 
 # ─── Frontend ───────────────────────────────────────────────
 

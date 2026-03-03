@@ -1,0 +1,29 @@
+# Build stage
+FROM docker.io/library/golang:1.25-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+COPY vendor/ vendor/
+COPY . .
+
+ARG VERSION=dev
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -mod=vendor \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
+    -o /app/file-worker \
+    ./app/file/cmd/worker
+
+# Runtime stage
+FROM docker.io/library/alpine:3.21
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+WORKDIR /app
+
+COPY --from=builder /app/file-worker .
+
+ENV TZ=Asia/Shanghai
+
+CMD ["/app/file-worker"]

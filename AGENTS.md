@@ -85,7 +85,7 @@
 ### 文件服务 (app/file/internal/biz/file.go)
 - [x] CheckUpload - 秒传/断点续传检查
 - [x] SaveChunk - 保存分块
-- [x] MergeChunks - 合并分块 (完成后调用 UserClient.UpdateStorageUsed)
+- [x] MergeChunks - 合并分块 (完成后调用 UserClient.UpdateStorageUsed + 发送 Kafka 消息)
 - [x] ListFiles - 文件列表
 - [x] CreateFolder - 创建文件夹
 - [x] RenameFile - 重命名
@@ -109,7 +109,7 @@
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 25 | Mock FileRepo + UserClient |
+| app/file/internal/biz | 单元测试 | 30 | Mock FileRepo + UserClient + MessageProducer |
 | app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 8 | JWT + CORS 中间件 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
@@ -117,7 +117,7 @@
 
 运行测试:
 ```bash
-go test ./...                              # 全部单元测试 (60个)
+go test ./...                              # 全部单元测试 (66个)
 go test -tags=integration ./...            # 包含集成测试 (需要基础设施)
 ```
 
@@ -126,8 +126,18 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - **Gateway → User Service**: 通过 Consul 发现 `user-service`，gRPC 调用
 - **Gateway → File Service**: 通过 Consul 发现 `file-service`，gRPC 调用
 - **File Service → User Service**: 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` RPC
+- **File Service → Kafka**: MergeChunks 完成后发送 TransferMessage / ThumbnailMessage
+- **file-worker → Kafka**: 消费 file-transfer / file-thumbnail topic
 
-## MQ 消息格式 (预留)
+## MQ 集成 (Kafka)
+
+**客户端**: `segmentio/kafka-go` | **模式**: 生产端同步 + 消费端手动 commit | **降级**: 无 Kafka 时 noopProducer
+
+| 文件 | 职责 |
+|------|------|
+| `app/file/internal/biz/file.go` | `MessageProducer` 接口 + 消息结构体 |
+| `app/file/internal/data/kafka.go` | `kafkaProducer` / `noopProducer` 实现 |
+| `app/file/cmd/worker/main.go` | 独立消费进程 (TransferWorker + ThumbnailWorker) |
 
 ### TransferMessage (file-transfer)
 ```json
@@ -147,6 +157,8 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 }
 ```
 
+详细说明见 [docs/message-queue.md](docs/message-queue.md)。
+
 ## 环境变量
 
 | 变量 | 说明 | 服务 | 示例 |
@@ -163,7 +175,10 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | OSS_ENDPOINT | OSS 端点 | file | oss-cn-hangzhou.aliyuncs.com |
 | OSS_ACCESS_KEY_ID | OSS AK | file | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
-| KAFKA_BROKERS | Kafka 地址 | file | localhost:9092 |
+| KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
+| KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
+| KAFKA_TRANSFER_TOPIC | 转存 topic | file-worker | file-transfer |
+| KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
 
 ## 关键设计决策
 

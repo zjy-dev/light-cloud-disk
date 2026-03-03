@@ -158,8 +158,37 @@ func (m *MockUserClient) UpdateStorageUsed(ctx context.Context, userID int64, de
 	return args.Error(0)
 }
 
+// MockMessageProducer is a testify mock for MessageProducer.
+type MockMessageProducer struct {
+	mock.Mock
+}
+
+func (m *MockMessageProducer) SendTransferMessage(ctx context.Context, msg *TransferMessage) error {
+	args := m.Called(ctx, msg)
+	return args.Error(0)
+}
+
+func (m *MockMessageProducer) SendThumbnailMessage(ctx context.Context, msg *ThumbnailMessage) error {
+	args := m.Called(ctx, msg)
+	return args.Error(0)
+}
+
+func (m *MockMessageProducer) Close() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
 func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUsecase {
-	return NewFileUsecase(repo, userClient, log.DefaultLogger)
+	mq := new(MockMessageProducer)
+	// By default, allow any MQ calls in tests that don't care about MQ
+	mq.On("SendTransferMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mq.On("Close").Return(nil).Maybe()
+	return NewFileUsecase(repo, userClient, mq, log.DefaultLogger)
+}
+
+func newTestFileUsecaseWithMQ(repo *MockFileRepo, userClient *MockUserClient, mq *MockMessageProducer) *FileUsecase {
+	return NewFileUsecase(repo, userClient, mq, log.DefaultLogger)
 }
 
 // --- CheckUpload tests ---
@@ -625,4 +654,120 @@ func TestSearchFiles_Success(t *testing.T) {
 	assert.Equal(t, int64(2), total)
 	assert.Len(t, files, 2)
 	repo.AssertExpectations(t)
+}
+
+// --- MQ Integration tests ---
+
+func TestMergeChunks_SendsTransferMessage(t *testing.T) {
+	repo := new(MockFileRepo)
+	userClient := new(MockUserClient)
+	mq := new(MockMessageProducer)
+	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
+	ctx := context.Background()
+
+	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
+	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
+	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
+		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
+	}, nil)
+	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
+	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
+
+	mq.On("SendTransferMessage", ctx, mock.MatchedBy(func(msg *TransferMessage) bool {
+		return msg.FileMD5 == "abc123" && msg.CurLocation == "/tmp/store/abc123.zip"
+	})).Return(nil)
+
+	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, file)
+	mq.AssertCalled(t, "SendTransferMessage", ctx, mock.Anything)
+	mq.AssertNotCalled(t, "SendThumbnailMessage", mock.Anything, mock.Anything)
+}
+
+func TestMergeChunks_SendsThumbnailForImage(t *testing.T) {
+	repo := new(MockFileRepo)
+	userClient := new(MockUserClient)
+	mq := new(MockMessageProducer)
+	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
+	ctx := context.Background()
+
+	repo.On("FindStoreByMD5", ctx, "img123").Return(nil, errors.New("not found"))
+	repo.On("MergeChunkData", ctx, "img123", "photo.jpg", int32(1)).Return("/tmp/store/img123.jpg", nil)
+	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
+	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
+		ID: 5, UserID: 100, Name: "photo.jpg", FileMD5: "img123", Size: 4096,
+	}, nil)
+	repo.On("ClearChunkInfo", ctx, "img123").Return(nil)
+	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(4096)).Return(nil)
+
+	mq.On("SendTransferMessage", ctx, mock.Anything).Return(nil)
+	mq.On("SendThumbnailMessage", ctx, mock.MatchedBy(func(msg *ThumbnailMessage) bool {
+		return msg.FileID == 5 && msg.FilePath == "/tmp/store/img123.jpg" && msg.FileType == "image/jpeg"
+	})).Return(nil)
+
+	file, err := uc.MergeChunks(ctx, 100, 0, "photo.jpg", "img123", 4096, 1)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, file)
+	mq.AssertCalled(t, "SendTransferMessage", ctx, mock.Anything)
+	mq.AssertCalled(t, "SendThumbnailMessage", ctx, mock.Anything)
+}
+
+func TestMergeChunks_MQFailureNonFatal(t *testing.T) {
+	repo := new(MockFileRepo)
+	userClient := new(MockUserClient)
+	mq := new(MockMessageProducer)
+	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
+	ctx := context.Background()
+
+	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
+	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
+	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
+		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
+	}, nil)
+	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
+	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
+
+	// MQ fails
+	mq.On("SendTransferMessage", ctx, mock.Anything).Return(errors.New("kafka down"))
+
+	// Should still succeed - MQ failure is non-fatal
+	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, file)
+}
+
+// --- Helper function tests ---
+
+func TestIsMediaFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		fileName string
+		expected bool
+	}{
+		{"jpg image", "photo.jpg", true},
+		{"JPEG upper", "PHOTO.JPEG", true},
+		{"png image", "screenshot.png", true},
+		{"mp4 video", "video.mp4", true},
+		{"zip file", "archive.zip", false},
+		{"pdf file", "doc.pdf", false},
+		{"no ext", "readme", false},
+		{"webp image", "img.webp", true},
+		{"mkv video", "movie.mkv", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isMediaFile(tt.fileName))
+		})
+	}
+}
+
+func TestDetectMIME(t *testing.T) {
+	assert.Equal(t, "image/jpeg", detectMIME("photo.jpg"))
+	assert.Equal(t, "image/png", detectMIME("img.png"))
+	assert.Equal(t, "application/octet-stream", detectMIME("unknown"))
 }

@@ -3,6 +3,7 @@ package biz
 import (
 	"context"
 	"errors"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,16 +99,39 @@ type UserClient interface {
 	UpdateStorageUsed(ctx context.Context, userID int64, delta int64) error
 }
 
+// TransferMessage is published after MergeChunks to trigger async OSS transfer.
+type TransferMessage struct {
+	FileMD5      string `json:"file_md5"`
+	CurLocation  string `json:"cur_location"`
+	DestLocation string `json:"dest_location"`
+}
+
+// ThumbnailMessage is published after MergeChunks for media files to generate thumbnails.
+type ThumbnailMessage struct {
+	FileID   int64  `json:"file_id"`
+	FilePath string `json:"file_path"`
+	FileType string `json:"file_type"`
+}
+
+// MessageProducer abstracts async message publishing (Kafka, etc.).
+type MessageProducer interface {
+	SendTransferMessage(ctx context.Context, msg *TransferMessage) error
+	SendThumbnailMessage(ctx context.Context, msg *ThumbnailMessage) error
+	Close() error
+}
+
 type FileUsecase struct {
 	repo       FileRepo
 	userClient UserClient
+	mq         MessageProducer
 	log        *log.Helper
 }
 
-func NewFileUsecase(repo FileRepo, userClient UserClient, logger log.Logger) *FileUsecase {
+func NewFileUsecase(repo FileRepo, userClient UserClient, mq MessageProducer, logger log.Logger) *FileUsecase {
 	return &FileUsecase{
 		repo:       repo,
 		userClient: userClient,
+		mq:         mq,
 		log:        log.NewHelper(logger),
 	}
 }
@@ -192,6 +216,30 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 	// Call user-service via gRPC to update storage usage
 	if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
 		uc.log.Warnf("failed to update storage used for user %d: %v", userID, err)
+	}
+
+	// Async: send transfer message to Kafka for OSS migration
+	if uc.mq != nil {
+		transferMsg := &TransferMessage{
+			FileMD5:      fileMD5,
+			CurLocation:  storePath,
+			DestLocation: "oss://bucket/" + fileMD5 + "/" + fileName,
+		}
+		if err := uc.mq.SendTransferMessage(ctx, transferMsg); err != nil {
+			uc.log.Warnf("failed to send transfer message for %s: %v", fileMD5, err)
+		}
+
+		// If it's a media file, send thumbnail generation message
+		if isMediaFile(fileName) {
+			thumbMsg := &ThumbnailMessage{
+				FileID:   createdFile.ID,
+				FilePath: storePath,
+				FileType: detectMIME(fileName),
+			}
+			if err := uc.mq.SendThumbnailMessage(ctx, thumbMsg); err != nil {
+				uc.log.Warnf("failed to send thumbnail message for file %d: %v", createdFile.ID, err)
+			}
+		}
 	}
 
 	return createdFile, nil
@@ -337,4 +385,28 @@ func (uc *FileUsecase) GetShare(ctx context.Context, shareID, password string) (
 
 func (uc *FileUsecase) SearchFiles(ctx context.Context, userID int64, keyword string, page, pageSize int32) ([]*File, int64, error) {
 	return uc.repo.Search(ctx, userID, keyword, page, pageSize)
+}
+
+// mediaExtensions lists file extensions that should trigger thumbnail generation.
+var mediaExtensions = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+	".bmp": true, ".webp": true, ".svg": true, ".ico": true,
+	".mp4": true, ".avi": true, ".mov": true, ".mkv": true,
+	".webm": true, ".flv": true, ".wmv": true,
+}
+
+// isMediaFile checks whether the file name has a media extension.
+func isMediaFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return mediaExtensions[ext]
+}
+
+// detectMIME returns the MIME type for the given file name.
+func detectMIME(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType == "" {
+		return "application/octet-stream"
+	}
+	return mimeType
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-var ProviderSet = wire.NewSet(NewData, NewFileRepo)
+var ProviderSet = wire.NewSet(NewData, NewFileRepo, NewKafkaProducer)
 
 type Data struct {
 	db    *gorm.DB

@@ -187,6 +187,31 @@ services:
         condition: service_healthy
       consul:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - cloud-disk
+
+  file-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        VERSION: ${VERSION:-dev}
+    image: light-cloud-disk/file-worker:${VERSION:-latest}
+    container_name: cloud-disk-file-worker
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: file-worker-group
+      NO_PROXY: "*"
+      no_proxy: "*"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+    depends_on:
+      kafka:
+        condition: service_healthy
     networks:
       - cloud-disk
 
