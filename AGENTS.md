@@ -22,6 +22,7 @@
 - 容器编排使用标准 Compose spec（Docker Compose / Podman Compose 兼容）
   
 - CI/CD 使用 GitHub Actions，容器镜像推送到 GHCR
+- GitHub Actions 的 Go 版本必须通过 `go-version-file: go.mod` 读取，并设置 `GOTOOLCHAIN=local`，避免版本漂移或自动 toolchain 导致测试失败
 
 
 ## 项目架构

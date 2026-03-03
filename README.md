@@ -154,6 +154,8 @@
 - Consul 1.19+
 - protoc + protoc-gen-go + protoc-gen-go-grpc
 
+> CI 中的 Go 版本通过 `actions/setup-go` 的 `go-version-file: go.mod` 自动同步，并设置 `GOTOOLCHAIN=local` 禁止自动切换工具链，避免覆盖率阶段出现 `covdata` 缺失。
+
 ### 安装工具
 ```bash
 make init
