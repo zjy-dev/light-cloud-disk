@@ -13,6 +13,8 @@
 | user-service | 自构建 | 9001 (gRPC) | 用户服务 |
 | file-service | 自构建 | 9002 (gRPC) | 文件服务 |
 | gateway | 自构建 | 8080 (HTTP) | API 网关 |
+| file-worker | 自构建 | - | Kafka 异步任务消费 |
+| frontend | 自构建 | 3000 (HTTP→Nginx) | Vue 3 SPA |
 
 说明：Gateway 会只读挂载 `file_storage` 卷到 `/app/store`，并通过 `/downloads` 路由提供下载访问。
 
@@ -56,19 +58,22 @@ make run-gateway      # 本地运行网关
 FROM golang:1.25-alpine AS builder
 ARG SERVICE
 COPY . .
-RUN go build -o /app/server ./app/${SERVICE}/cmd
+# worker 构建路径为 ./app/file/cmd/worker；其余为 ./app/${SERVICE}/cmd
+RUN if [ "$SERVICE" = "worker" ]; then BUILD_PATH=./app/file/cmd/worker; else BUILD_PATH=./app/${SERVICE}/cmd; fi; \
+    go build -o /app/server ${BUILD_PATH}
 
 # 运行阶段
 FROM alpine:3.21
 COPY --from=builder /app/server /app/server
-COPY app/${SERVICE}/configs/ /app/configs/
-CMD ["/app/server", "-conf", "/app/configs/"]
+COPY --from=builder /app/configs/ /app/configs/
+# gateway/worker 直接运行; user/file 带 -conf 启动
 ```
 
 特点：
 - `CGO_ENABLED=0` 静态编译，无外部依赖
 - 最终镜像约 20MB
-- 支持通过 `--build-arg SERVICE=user|file|gateway` 构建不同服务
+- 支持通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
+- worker 和 gateway 无需 YAML 配置文件，从环境变量读取
 
 ## Frontend Dockerfile
 

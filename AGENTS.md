@@ -16,7 +16,7 @@
 
 - 后端编程语言使用 Go，框架 Kratos v2
   
-- 前端包管理器实用 pnpm, 如果没有 node 环境则用 fnm 配置最新的 lts 版本
+- 前端包管理器使用 pnpm, 如果没有 node 环境则用 fnm 配置最新的 lts 版本
 - 前端框架用 Vue 3
 
 - 容器编排使用标准 Compose spec（Docker Compose / Podman Compose 兼容）
@@ -51,6 +51,8 @@
     └────────┘   └────────┘ └───────┘
 
     ← ─ ─ Consul 服务发现 ─ ─ →
+
+    File Service ──→ Kafka ──→ file-worker (异步转存/缩略图)
 ```
 
 每个 Kratos 服务内部采用 Clean Architecture 分层:
@@ -71,6 +73,164 @@
 │              Data Layer                 │
 │   (实现 Repo 接口: GORM/Redis/gRPC)     │
 └─────────────────────────────────────────┘
+```
+
+## 根目录文件与目录说明
+
+### 根目录文件
+
+| 文件 | 作用 |
+|------|------|
+| `go.mod` / `go.sum` | Go module 定义 (`github.com/J-Y-Zhang/light-cloud-disk`)，锁定全部依赖版本 |
+| `Makefile` | 统一构建入口：`make build` / `make test` / `make api` / `make wire` / `make run-*` / `make fe-*` / `make image-*` / `make infra-up` 等 |
+| `Dockerfile` | 统一多阶段构建，通过 `--build-arg SERVICE=user\|file\|gateway\|worker` 编译 4 种服务到同一镜像规格 |
+| `docker-compose.yml` | 全栈容器编排 (frontend / gateway / user / file / file-worker / consul / mysql / redis / kafka) |
+| `.env.example` | 环境变量模板，复制为 `.env` 供本地/容器使用 |
+| `.dockerignore` | Docker 构建排除规则；注意 `vendor/` 有意保留以支持离线构建 |
+| `.gitignore` | Git 忽略规则 (`bin/`、`/cmd`、`/worker`、`frontend/dist/`、`.env`、`coverage.out` 等) |
+| `README.md` | 项目 README，面向外部用户和面试官 |
+| `AGENTS.md` | 本文件，面向 AI Agent 和开发者的内部开发规范 |
+
+### 根目录子目录
+
+| 目录 | 作用 |
+|------|------|
+| `api/` | Protobuf 接口定义及其生成的 Go 代码 (`user/v1/`, `file/v1/`) |
+| `app/` | **核心业务代码**，包含三个微服务 + 一个独立 Worker 进程 |
+| `vendor/` | `go mod vendor` 生成的依赖源码副本；Dockerfile 用 `-mod=vendor` 做**零网络离线构建**，保证 CI/本地/容器三者一致。`.dockerignore` 故意不排除此目录 |
+| `third_party/` | 第三方 proto (google/api annotations)，供 `protoc` 编译时引用 |
+| `docs/` | 面试 / 设计文档 (architecture / gateway / chunk-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
+| `frontend/` | Vue 3 前端 SPA，独立 pnpm 项目；拥有自己的 `Dockerfile`（Node 构建 → Nginx 运行） |
+| `.github/workflows/` | `ci.yml`（Push/PR → 后端测试 + 前端测试 + Compose 冒烟 + 构建 + GHCR 推送）、`release.yml`（tag → 多架构二进制 → GitHub Release） |
+
+### `api/` 目录
+
+```
+api/
+├── user/v1/
+│   ├── user.proto          # 用户服务 gRPC 接口定义
+│   ├── user.pb.go          # protoc 生成的消息类型
+│   └── user_grpc.pb.go     # protoc 生成的 gRPC 客户端/服务端代码
+└── file/v1/
+    ├── file.proto
+    ├── file.pb.go
+    └── file_grpc.pb.go
+```
+
+### `app/` 目录 (核心)
+
+```
+app/
+├── user/                        # 用户服务 (Kratos v2, gRPC :9001)
+│   ├── cmd/
+│   │   ├── main.go              # 入口：加载配置、创建 Consul 注册器、启动 Kratos App
+│   │   ├── wire.go              # Wire 依赖注入声明
+│   │   └── wire_gen.go          # Wire 自动生成的注入代码
+│   ├── configs/
+│   │   └── config.yaml          # 数据库等非敏感配置 (敏感值用 ${ENV_VAR} 占位)
+│   └── internal/
+│       ├── biz/
+│       │   ├── biz.go           # Wire ProviderSet
+│       │   ├── user.go          # UserUsecase + UserRepo 接口 + User 实体
+│       │   └── user_test.go     # 14 个单元测试 (Mock UserRepo)
+│       ├── data/
+│       │   ├── data.go          # GORM 初始化 + Wire ProviderSet
+│       │   ├── user.go          # UserRepo 实现 (GORM)
+│       │   └── user_integration_test.go  # 5 个集成测试 (build tag: integration)
+│       ├── service/
+│       │   ├── service.go       # Wire ProviderSet
+│       │   └── user.go          # gRPC UserService 实现 (调用 UserUsecase)
+│       ├── server/
+│       │   ├── server.go        # Wire ProviderSet
+│       │   └── grpc.go          # gRPC Server 配置
+│       └── conf/
+│           ├── conf.proto       # 配置 protobuf 定义
+│           └── conf.pb.go       # 生成的配置结构体
+│
+├── file/                        # 文件服务 (Kratos v2, gRPC :9002)
+│   ├── cmd/
+│   │   ├── main.go              # 入口：加载配置、Consul 注册、发现 user-service、启动
+│   │   ├── wire.go / wire_gen.go
+│   │   └── worker/
+│   │       └── main.go          # file-worker 独立消费进程 (Kafka consumer)
+│   ├── configs/
+│   │   └── config.yaml
+│   └── internal/
+│       ├── biz/
+│       │   ├── biz.go
+│       │   ├── file.go          # FileUsecase + FileRepo/UserClient/MessageProducer 接口
+│       │   └── file_test.go     # 30 个单元测试
+│       ├── data/
+│       │   ├── data.go          # GORM + Redis 初始化
+│       │   ├── file.go          # FileRepo 实现 (GORM + Redis)
+│       │   ├── user_client.go   # UserClient 实现 (gRPC → user-service)
+│       │   ├── kafka.go         # kafkaProducer / noopProducer 实现
+│       │   └── file_integration_test.go  # 7 个集成测试
+│       ├── service/
+│       │   ├── service.go
+│       │   └── file.go          # gRPC FileService 实现
+│       ├── server/
+│       │   ├── server.go
+│       │   └── grpc.go
+│       └── conf/
+│           ├── conf.proto
+│           └── conf.pb.go
+│
+└── gateway/                     # API 网关 (Gin, HTTP :8080)
+    ├── cmd/
+    │   └── main.go              # Gin 路由定义、中间件挂载、启动
+    ├── configs/
+    │   └── config.yaml          # 网关配置 (Consul 地址等)
+    └── internal/
+        ├── client/
+        │   └── client.go        # Consul gRPC 客户端构造 (discovery:///user-service 等)
+        ├── handler/
+        │   ├── user.go          # 用户相关 HTTP → gRPC 处理器
+        │   ├── file.go          # 文件相关 HTTP → gRPC 处理器
+        │   └── handler_test.go  # 13 个单元测试
+        └── middleware/
+            ├── jwt.go           # JWT 认证中间件
+            ├── cors.go          # CORS + Logger 中间件
+            └── middleware_test.go # 9 个单元测试
+```
+
+### `frontend/` 目录
+
+```
+frontend/
+├── Dockerfile               # 多阶段构建：Node 编译 → Nginx 运行
+├── nginx.conf               # Nginx 配置 (SPA fallback + /api 反代)
+├── package.json             # pnpm 依赖声明
+├── pnpm-lock.yaml
+├── vite.config.ts           # Vite 配置 (Tailwind 插件, 路径别名, API 代理 → :8080)
+├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
+├── index.html               # SPA 入口
+└── src/
+    ├── main.ts              # Vue 应用入口
+    ├── App.vue              # 根组件
+    ├── style.css            # Tailwind v4 主题 (light/dark CSS 变量)
+    ├── api/
+    │   ├── client.ts        # Axios 实例 (baseURL, JWT interceptor, 401 重定向)
+    │   ├── user.ts          # 用户 API (register, login, getUserInfo, updateUserInfo)
+    │   └── file.ts          # 文件 API (20 个端点)
+    ├── composables/
+    │   ├── useTheme.ts      # 主题切换 (light/dark/system) + localStorage 持久化
+    │   ├── useUpload.ts     # 分块上传 (SHA-256 / 秒传 / 断点续传 / 进度追踪)
+    │   └── __tests__/       # composable 单元测试
+    ├── components/
+    │   ├── layout/          # AppLayout / AppSidebar / AppHeader
+    │   ├── ui/              # ThemeToggle / BaseModal
+    │   └── file/            # FileBreadcrumb / FileToolbar / FileItem / UploadProgress / ShareDialog
+    ├── stores/
+    │   ├── auth.ts          # Pinia: 认证状态 (login/register/logout/fetchUserInfo)
+    │   ├── file.ts          # Pinia: 文件列表/导航/排序/选择/CRUD
+    │   └── __tests__/       # store 单元测试
+    ├── views/               # LoginView / RegisterView / FileBrowserView / TrashView / ProfileView / SharePublicView
+    ├── router/
+    │   ├── index.ts         # Vue Router 配置 + auth guard
+    │   └── __tests__/       # router 单元测试
+    └── types/
+        └── index.ts         # TypeScript 接口定义 (对齐 proto)
 ```
 
 ## 服务清单
@@ -104,6 +264,10 @@
 - [x] CORS 中间件
 - [x] Consul 服务发现客户端
 
+### file-worker (app/file/cmd/worker/)
+- [x] Kafka 消费：TransferWorker (file-transfer topic) — OSS 转存 (stub)
+- [x] Kafka 消费：ThumbnailWorker (file-thumbnail topic) — 缩略图生成 (stub)
+
 ## 测试策略
 
 | 模块 | 测试类型 | 测试数 | 说明 |
@@ -111,13 +275,13 @@
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
 | app/file/internal/biz | 单元测试 | 30 | Mock FileRepo + UserClient + MessageProducer |
 | app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
-| app/gateway/internal/middleware | 单元测试 | 8 | JWT + CORS 中间件 |
+| app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS 中间件 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag: integration) |
 
 运行测试:
 ```bash
-go test ./...                              # 全部单元测试 (66个)
+go test ./...                              # 全部单元测试 (66 个)
 go test -tags=integration ./...            # 包含集成测试 (需要基础设施)
 ```
 
@@ -179,6 +343,9 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
 | KAFKA_TRANSFER_TOPIC | 转存 topic | file-worker | file-transfer |
 | KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
+| FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
+| FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
+| DOWNLOAD_URL_PREFIX | 下载 URL 前缀 | file | http://localhost:8080/downloads |
 
 ## 关键设计决策
 
@@ -188,13 +355,28 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 4. **跨服务调用**: File Service 定义 `biz.UserClient` 接口，由 `data/user_client.go` 通过 gRPC 实现，解耦业务逻辑和远程调用。
 5. **Wire 依赖注入**: 每个 Kratos 服务使用独立的 `wire.go`，Gateway 不使用 Wire (直接构造)。
 6. **Monorepo 结构**: 后端留在根目录（避免破坏 Go module 路径），前端位于 `frontend/` 目录。
+7. **vendor 离线构建**: `go mod vendor` 将全部依赖源码镜像到仓库，Dockerfile 使用 `-mod=vendor` 实现零网络构建，确保 CI 和本地构建行为一致。
+8. **统一 Dockerfile**: 用单个 `Dockerfile` + `SERVICE` 构建参数替代多个 Dockerfile，worker 的构建路径为 `./app/file/cmd/worker`，其余为 `./app/${SERVICE}/cmd`。
+
+## 容器化
+
+- 统一 `Dockerfile`：多阶段构建 (golang:1.25-alpine → alpine:3.21)，通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
+- 前端独立 `frontend/Dockerfile`：多阶段 (node:24-alpine → nginx:1.27-alpine)
+- `docker-compose.yml` 编排 9 个服务：frontend / gateway / user-service / file-service / file-worker / consul / mysql / redis / kafka
+
+## CI/CD
+
+- `ci.yml`：Push/PR 到 `main`/`v2` 分支触发 → 后端测试 → 前端测试 → Compose 冒烟 → 构建二进制 → 推送 GHCR 镜像
+- `release.yml`：Push `v*` tag 触发 → 测试 → 编译 amd64/arm64 多架构二进制 → 创建 GitHub Release
 
 ## 最近更新（2026-03）
 
-- 前端镜像改为多阶段自构建（Node 构建 + Nginx 运行），不依赖宿主机 `dist/`。
-- `docker-compose.yml` 继续保持全栈容器编排（frontend/gateway/user/file/consul/mysql/redis/kafka），并固定 Kafka 镜像版本到 `apache/kafka:3.6.2`。
-- GitHub Actions `ci.yml` 新增 Compose 冒烟测试，验证容器启动与关键连通性后再执行镜像推送。
-- 文件上传链路补全为“分块落盘 + 合并落盘 + 存储表记录 + 下载 URL 返回”，并通过 Gateway `/downloads` 暴露只读下载路径。
+- 合并 `Dockerfile.worker` 到统一 `Dockerfile`，通过 `SERVICE=worker` 参数区分
+- 清理根目录误提交的二进制产物 (`cmd`、`worker`、`bin/*`)，更新 `.gitignore`
+- 前端镜像改为多阶段自构建（Node 构建 + Nginx 运行），不依赖宿主机 `dist/`
+- `docker-compose.yml` 继续保持全栈容器编排，并固定 Kafka 镜像版本到 `apache/kafka:3.6.2`
+- GitHub Actions `ci.yml` 新增 Compose 冒烟测试，验证容器启动与关键连通性后再执行镜像推送
+- 文件上传链路补全为"分块落盘 + 合并落盘 + 存储表记录 + 下载 URL 返回"，并通过 Gateway `/downloads` 暴露只读下载路径
 
 ## 前端架构
 
@@ -208,41 +390,6 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - **图标**: lucide-vue-next
 - **工具**: @vueuse/core (theme persistence, system preference detection)
 - **包管理**: pnpm
-
-### 目录结构
-
-```
-frontend/
-├── src/
-│   ├── api/            # Axios 客户端 + 按领域拆分的 API 模块
-│   │   ├── client.ts   # Axios 实例 (baseURL, JWT interceptor)
-│   │   ├── user.ts     # 用户相关 API
-│   │   └── file.ts     # 文件/回收站/分享 API
-│   ├── composables/    # Vue 组合式函数
-│   │   ├── useTheme.ts # 主题切换 (light/dark/system)
-│   │   └── useUpload.ts # 分块上传 (MD5/秒传/断点续传)
-│   ├── components/
-│   │   ├── layout/     # 布局组件 (AppLayout, AppSidebar, AppHeader)
-│   │   ├── ui/         # 通用 UI (ThemeToggle, BaseModal)
-│   │   └── file/       # 文件相关 (FileBreadcrumb, FileToolbar, FileItem, UploadProgress, ShareDialog)
-│   ├── stores/         # Pinia 状态管理
-│   │   ├── auth.ts     # 认证 (login/register/logout/profile)
-│   │   └── file.ts     # 文件 (CRUD, navigation, sorting, selection)
-│   ├── views/          # 页面组件
-│   │   ├── LoginView.vue
-│   │   ├── RegisterView.vue
-│   │   ├── FileBrowserView.vue
-│   │   ├── TrashView.vue
-│   │   ├── ProfileView.vue
-│   │   └── SharePublicView.vue
-│   ├── router/         # Vue Router 配置 + auth guard
-│   ├── types/          # TypeScript 接口定义 (对齐 proto)
-│   ├── style.css       # Tailwind v4 主题 (light/dark CSS 变量)
-│   ├── App.vue         # 根组件
-│   └── main.ts         # 入口
-├── vite.config.ts      # Vite 配置 (Tailwind 插件, 路径别名, API 代理)
-└── package.json
-```
 
 ### 主题系统
 
@@ -266,18 +413,6 @@ frontend/
 - [x] 文件搜索
 - [x] 用户资料编辑
 - [x] 存储用量显示
-
-### 前端服务清单
-
-| 模块 | 路径 | 说明 |
-|------|------|------|
-| API Client | src/api/client.ts | Axios 实例, JWT interceptor, 401 处理 |
-| User API | src/api/user.ts | register, login, getUserInfo, updateUserInfo |
-| File API | src/api/file.ts | 20 个文件操作端点 |
-| Auth Store | src/stores/auth.ts | 认证状态, login/register/logout/fetchUserInfo |
-| File Store | src/stores/file.ts | 文件列表, 导航, 排序, 选择, CRUD |
-| useTheme | src/composables/useTheme.ts | 主题切换 + localStorage 持久化 |
-| useUpload | src/composables/useUpload.ts | 分块上传, MD5 计算, 进度追踪 |
 
 ### 前端测试策略
 

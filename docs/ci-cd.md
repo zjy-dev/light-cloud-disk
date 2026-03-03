@@ -7,8 +7,8 @@
 ### CI 工作流 (ci.yml)
 
 **触发条件**:
-- Push 到 `main` 分支
-- 向 `main` 分支发起 PR
+- Push 到 `main` 或 `v2` 分支
+- 向 `main` 或 `v2` 分支发起 PR
 
 **执行步骤**:
 1. **Test Job**
@@ -19,11 +19,9 @@
    - 运行单元测试 (`go test -v -race -coverprofile=coverage.out ./...`)
    - 上传覆盖率报告到 Codecov
 
-2. **Build Job** (依赖 Test 通过)
-   - 编译 2 个后端服务的 Linux AMD64 二进制文件:
-     - `user-service`
-     - `file-service`
-   - 上传构建产物
+2. **Frontend Test Job**
+   - 设置 Node.js 24 + pnpm
+   - `pnpm install --frozen-lockfile` + `pnpm test:run` + `pnpm build`
 
 3. **Compose Smoke Job** (依赖后端/前端测试通过)
     - `docker compose up -d --build` 启动全栈容器
@@ -32,8 +30,19 @@
     - 校验 gRPC 端口连通 (`9001/9002`)
     - 无论成功失败都执行 `docker compose down -v`
 
-4. **Docker Images Job**
-    - 后端与前端镜像在 Compose Smoke 通过后构建/推送
+4. **Build Job** (依赖 Test + Smoke 通过)
+   - 编译 4 个后端服务的 Linux AMD64 二进制文件:
+     - `user-service`
+     - `file-service`
+     - `gateway`
+     - `file-worker`
+   - 上传构建产物
+
+5. **Docker Images Jobs** (依赖 Smoke 通过，仅 push 触发)
+    - 后端 3 服务 (user/file/gateway) 通过 `SERVICE` 矩阵构建镜像
+    - file-worker 独立 Job，`SERVICE=worker`
+    - 前端镜像独立 Job
+    - 全部支持 linux/amd64 + linux/arm64
     - `latest` 标签仅在 `main` 分支 push 时发布
 
 ### Release 工作流 (release.yml)
@@ -47,6 +56,8 @@
 4. 编译多架构二进制文件:
    - `user-service-linux-amd64` / `arm64`
    - `file-service-linux-amd64` / `arm64`
+   - `gateway-linux-amd64` / `arm64`
+   - `file-worker-linux-amd64` / `arm64`
 5. 生成 SHA256 校验和
 6. 创建 GitHub Release 并上传文件
 
@@ -57,11 +68,13 @@
 make build-user     # → bin/user-service
 make build-file     # → bin/file-service
 make build-gateway  # → bin/gateway
+make build-worker   # → bin/file-worker
 
 # 或手动编译
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/user-service ./app/user/cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/file-service ./app/file/cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/gateway ./app/gateway/cmd
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/file-worker ./app/file/cmd/worker
 ```
 
 ## 容器镜像发布
@@ -91,5 +104,5 @@ git push origin v3.0.0
 1. **为什么用 GitHub Actions？** — 与 GitHub 深度集成，配置简单，免费额度充足
 2. **为什么 CGO_ENABLED=0？** — 生成静态链接二进制，便于容器化部署 (Alpine 没有 glibc)
 3. **为什么同时构建 AMD64 和 ARM64？** — 支持 x86 服务器和 ARM 云服务器 (如 AWS Graviton)
-4. **三个服务的 CI 策略？** — 共用 go.mod，一次测试覆盖全部，分别编译
+4. **四个服务的 CI 策略？** — 共用 go.mod，一次测试覆盖全部，分别编译
 5. **为什么要 `go-version-file + GOTOOLCHAIN=local`？** — 保证 `go` 命令与工具链二进制一致，避免自动 toolchain 导致覆盖率工具缺失

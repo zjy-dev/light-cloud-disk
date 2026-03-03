@@ -195,8 +195,9 @@ services:
   file-worker:
     build:
       context: .
-      dockerfile: Dockerfile.worker
+      dockerfile: Dockerfile
       args:
+        SERVICE: worker
         VERSION: ${VERSION:-dev}
     image: light-cloud-disk/file-worker:${VERSION:-latest}
     container_name: cloud-disk-file-worker

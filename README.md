@@ -121,9 +121,10 @@
 │   │   └── configs/            # 配置文件 (YAML)
 │   ├── file/                    # 文件服务
 │   │   ├── cmd/                 # 入口
+│   │   │   └── worker/          # file-worker (Kafka 消费进程)
 │   │   ├── internal/            # 内部实现
 │   │   │   ├── biz/            # 业务逻辑 (FileUsecase)
-│   │   │   ├── data/           # 数据访问 (MySQL + Redis)
+│   │   │   ├── data/           # 数据访问 (MySQL + Redis + Kafka)
 │   │   │   ├── service/        # gRPC 服务实现
 │   │   │   ├── server/         # gRPC 服务器配置
 │   │   │   └── conf/           # 配置定义
@@ -137,8 +138,9 @@
 │       └── configs/            # 配置文件
 ├── third_party/                 # 第三方 proto
 ├── docs/                        # 功能文档
-├── Dockerfile                   # 多阶段构建 (3 服务共用)
-├── docker-compose.yml           # 完整编排
+├── vendor/                      # go mod vendor 依赖副本 (离线构建)
+├── Dockerfile                   # 统一多阶段构建 (SERVICE=user|file|gateway|worker)
+├── docker-compose.yml           # 完整编排 (9 服务)
 ├── Makefile                     # 构建/运行/生成命令
 └── go.mod
 ```
@@ -261,12 +263,14 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - File Service 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` 更新存储用量
 - 所有 gRPC 连接使用 Kratos gRPC 客户端 + Consul 服务发现
 
-## 消息队列 (预留)
+## 消息队列
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| file-transfer | FileService | TransferWorker | 文件异步转存 OSS |
-| file-thumbnail | FileService | ThumbnailWorker | 生成文件缩略图 |
+| file-transfer | FileService | file-worker (TransferWorker) | 文件异步转存 OSS |
+| file-thumbnail | FileService | file-worker (ThumbnailWorker) | 生成文件缩略图 |
+
+客户端使用 `segmentio/kafka-go`，未配置 Kafka 时自动降级为 `noopProducer`。
 
 ## 环境变量
 
@@ -284,7 +288,10 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | OSS_ENDPOINT | OSS 端点 | file | oss-cn-hangzhou.aliyuncs.com |
 | OSS_ACCESS_KEY_ID | OSS AK | file | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
-| KAFKA_BROKERS | Kafka 地址 | file | localhost:9092 |
+| KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
+| KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
+| KAFKA_TRANSFER_TOPIC | 转存 topic | file-worker | file-transfer |
+| KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
 | FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
 | FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
 | DOWNLOAD_URL_PREFIX | 下载 URL 前缀 | file | http://localhost:8080/downloads |
@@ -294,9 +301,9 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 25 | Mock FileRepo + UserClient |
+| app/file/internal/biz | 单元测试 | 30 | Mock FileRepo + UserClient + MessageProducer |
 | app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
-| app/gateway/internal/middleware | 单元测试 | 8 | JWT + CORS |
+| app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag) |
 
@@ -319,6 +326,9 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
 - [服务发现与通信](docs/service-discovery.md)
+- [消息队列集成](docs/message-queue.md)
+- [CI/CD 配置](docs/ci-cd.md)
+- [容器化部署](docs/containerization.md)
 - [前端架构与设计](docs/frontend.md)
 
 ## 更新日志

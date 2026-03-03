@@ -220,10 +220,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.worker
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
+            SERVICE=worker
             VERSION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

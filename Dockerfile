@@ -10,37 +10,47 @@ COPY . .
 ARG SERVICE=user
 ARG VERSION=dev
 
-# SERVICE can be: user, file, gateway
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -mod=vendor \
-    -ldflags="-s -w -X main.Version=${VERSION}" \
-    -o /app/${SERVICE}-service \
-    ./app/${SERVICE}/cmd
+# SERVICE can be: user, file, gateway, worker
+# worker builds from ./app/file/cmd/worker; others from ./app/${SERVICE}/cmd
+RUN set -e; \
+    if [ "$SERVICE" = "worker" ]; then \
+      BUILD_PATH=./app/file/cmd/worker; \
+    else \
+      BUILD_PATH=./app/${SERVICE}/cmd; \
+    fi; \
+    CGO_ENABLED=0 GOOS=linux go build \
+      -mod=vendor \
+      -ldflags="-s -w -X main.Version=${VERSION}" \
+      -o /app/server \
+      ${BUILD_PATH}
 
-# Runtime stage - alpine base without apk installs (CA certs copied from builder)
+# Prepare configs (user/file need YAML configs; gateway/worker read env only)
+RUN mkdir -p /app/configs && \
+    if [ "$SERVICE" != "worker" ]; then \
+      cp -r app/${SERVICE}/configs/* /app/configs/ 2>/dev/null || true; \
+    fi
+
+# Runtime stage
 FROM docker.io/library/alpine:3.21
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 WORKDIR /app
 
-COPY --from=builder /app/*-service .
+COPY --from=builder /app/server .
+COPY --from=builder /app/configs/ ./configs/
 
 ARG SERVICE=user
 ENV SERVICE=${SERVICE}
-
-# Copy configs only for kratos services (user, file)
-# Gateway reads config from env vars only
-COPY app/${SERVICE}/configs/ ./configs/
 
 ENV TZ=Asia/Shanghai
 
 EXPOSE 8080 9001 9002
 
-# Gateway uses -addr flag, Kratos services use -conf flag
+# gateway/worker: run directly; kratos services (user/file): use -conf flag
 CMD ["/bin/sh", "-c", \
-    "if [ \"$SERVICE\" = \"gateway\" ]; then \
-        /app/gateway-service; \
+    "if [ \"$SERVICE\" = \"gateway\" ] || [ \"$SERVICE\" = \"worker\" ]; then \
+        /app/server; \
     else \
-        /app/${SERVICE}-service -conf /app/configs/; \
+        /app/server -conf /app/configs/; \
     fi"]

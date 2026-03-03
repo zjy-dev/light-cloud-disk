@@ -20,6 +20,8 @@ Thumbs.db
 
 # Build
 bin/
+/cmd
+/worker
 
 # Temp
 tmp/
