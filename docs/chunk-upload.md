@@ -50,6 +50,55 @@
                     └──────────────────────────────────────┘
 ```
 
+## 前端 MD5 计算（spark-md5 分块哈希）
+
+### 问题背景
+
+最初使用 `crypto.subtle.digest('SHA-256', file.arrayBuffer())` 方案：
+- **阻塞浏览器**：`file.arrayBuffer()` 将整个文件加载到内存，大文件时 JS 主线程冻结
+- **无进度反馈**：用户看到上传界面卡住，无法判断是否在工作
+
+### 解决方案：spark-md5 分块哈希
+
+```typescript
+// frontend/src/composables/useUpload.ts
+import SparkMD5 from 'spark-md5'
+
+const HASH_CHUNK_SIZE = 2 * 1024 * 1024  // 2MB 每次读取
+
+async function computeMd5(file: File, onProgress?: (pct: number) => void): Promise<string> {
+  const spark = new SparkMD5.ArrayBuffer()
+  const totalChunks = Math.ceil(file.size / HASH_CHUNK_SIZE)
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * HASH_CHUNK_SIZE
+    const slice = file.slice(start, Math.min(start + HASH_CHUNK_SIZE, file.size))
+    const buffer = await slice.arrayBuffer()  // 每次只读 2MB
+    spark.append(buffer)
+    onProgress?.((i + 1) / totalChunks)
+    // 关键：让出事件循环，Vue 响应式更新 UI
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+
+  return spark.end()  // 返回十六进制 MD5 字符串
+}
+```
+
+### 进度映射策略
+
+整个 `uploadFile` 进度分为三段：
+- **0–15%**：MD5 哈希计算（`computeMd5` onProgress 回调）
+- **15–90%**：分块上传（每个 chunk 均匀分配）
+- **90–100%**：合并 + 完成
+
+### 为什么用 MD5 不用 SHA-256？
+
+- spark-md5 专为浏览器流式哈希设计，接口简单高效
+- 文件去重场景下碰撞率可接受（MD5 128-bit，理论碰撞概率极低）
+- SHA-256 通过 `crypto.subtle` 计算时不支持流式输入，必须一次性传入完整 buffer
+
+---
+
 ## 秒传原理
 
 1. 客户端计算文件完整 MD5
