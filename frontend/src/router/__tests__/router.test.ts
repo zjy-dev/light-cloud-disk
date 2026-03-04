@@ -28,7 +28,7 @@ describe('router auth guard', () => {
     localStorage.setItem('light-cloud-token', 'valid-token')
 
     const { default: router } = await import('@/router')
-    // First navigate to a neutral starting point
+    // Navigate to a neutral page first, then verify redirect behavior
     await router.push('/')
     await router.push('/login')
 
@@ -76,7 +76,7 @@ describe('router auth guard', () => {
     localStorage.setItem('light-cloud-token', 'valid-token')
 
     const { default: router } = await import('@/router')
-    // First navigate to authenticated home, then attempt register
+    // Navigate to authenticated home first, then try register route
     await router.push('/')
     await router.push('/register')
 

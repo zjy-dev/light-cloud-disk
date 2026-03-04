@@ -59,7 +59,7 @@ func (uc *UserUsecase) Register(ctx context.Context, username, password, nicknam
 		Password:     password,
 		Nickname:     nickname,
 		Email:        email,
-		StorageLimit: 10 * 1024 * 1024 * 1024, // 10GB default
+		StorageLimit: 10 * 1024 * 1024 * 1024, // Default 10GB
 	}
 
 	return uc.repo.Create(ctx, user)
@@ -71,7 +71,7 @@ func (uc *UserUsecase) Login(ctx context.Context, username, password string) (*U
 		return nil, ErrUserNotFound
 	}
 
-	// Password verification is delegated to the repo layer which handles bcrypt comparison
+	// Password verification is delegated to repo where bcrypt comparison is handled
 	if err := uc.repo.CheckPassword(ctx, user, password); err != nil {
 		return nil, ErrInvalidPassword
 	}

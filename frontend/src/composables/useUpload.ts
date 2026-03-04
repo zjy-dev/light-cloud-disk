@@ -3,7 +3,7 @@ import SparkMD5 from 'spark-md5'
 import { fileApi } from '@/api/file'
 
 const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB per upload chunk
-const HASH_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB per hash chunk (smaller = more responsive)
+const HASH_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB per hash chunk for smoother UI
 
 export interface UploadTask {
   id: string
@@ -20,9 +20,9 @@ export function useUpload() {
   const isUploading = computed(() => tasks.value.some((t) => ['hashing', 'uploading', 'merging'].includes(t.status)))
 
   /**
-   * Compute MD5 hash of a file in 2MB chunks using spark-md5.
-   * Chunked reading prevents browser freeze on large files and allows progress reporting.
-   * onProgress receives a value in [0, 1].
+   * Compute file MD5 in 2MB chunks with spark-md5
+   * Chunked reads prevent UI freeze on large files and improve progress updates
+   * onProgress receives values in [0, 1]
    */
   async function computeMd5(file: File, onProgress?: (pct: number) => void): Promise<string> {
     const spark = new SparkMD5.ArrayBuffer()
@@ -34,7 +34,7 @@ export function useUpload() {
       const buffer = await slice.arrayBuffer()
       spark.append(buffer)
       onProgress?.((i + 1) / totalChunks)
-      // Yield to event loop between chunks so Vue reactivity can update the UI
+      // Yield to event loop between chunks so Vue can refresh UI
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
 
@@ -62,13 +62,13 @@ export function useUpload() {
     tasks.value.push(task)
 
     try {
-      // Compute MD5 hash in chunks — updates task.progress from 0→15 while hashing
+      // Compute MD5 in chunks and map hashing progress to 0-15
       const fileMd5 = await computeMd5(file, (pct) => {
         task.progress = Math.round(pct * 15)
       })
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-      // Check for instant upload
+      // Check if instant upload is available
       const { data: checkResult } = await fileApi.checkUpload({
         fileMd5,
         fileSize: file.size,
@@ -76,7 +76,7 @@ export function useUpload() {
       })
 
       if (checkResult.canFastUpload) {
-        // Instant upload - merge directly
+        // Instant upload hit, go straight to merge
         task.status = 'merging'
         task.progress = 90
         await fileApi.mergeChunks({

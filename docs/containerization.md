@@ -22,16 +22,16 @@
 ## 快速启动
 
 ```bash
-# 启动所有服务
+# Start all services
 docker-compose up -d   # 或 podman-compose up -d
 
-# 仅启动基础设施 (本地开发)
+# Start infra only (local development)
 docker-compose up -d consul mysql redis kafka
 
-# 查看日志
+# View logs
 docker-compose logs -f gateway user-service file-service
 
-# 停止
+# Stop services
 docker-compose down
 ```
 
@@ -43,7 +43,7 @@ make image-file       # 构建文件服务镜像
 make image-gateway    # 构建网关镜像
 
 make infra-up         # 启动基础设施 (MySQL + Redis + Consul + Kafka)
-make infra-down       # 停止基础设施
+make infra-down       # Stop services基础设施
 
 make run-user         # 本地运行用户服务
 make run-file         # 本地运行文件服务
@@ -55,19 +55,19 @@ make run-gateway      # 本地运行网关
 多阶段构建，通过 `SERVICE` 构建参数指定服务：
 
 ```dockerfile
-# 构建阶段
+# Build stage
 FROM golang:1.25-alpine AS builder
 ARG SERVICE
 COPY . .
-# worker 构建路径为 ./app/file/cmd/worker；其余为 ./app/${SERVICE}/cmd
+# worker build path is ./app/file/cmd/worker, others use ./app/${SERVICE}/cmd
 RUN if [ "$SERVICE" = "worker" ]; then BUILD_PATH=./app/file/cmd/worker; else BUILD_PATH=./app/${SERVICE}/cmd; fi; \
     go build -o /app/server ${BUILD_PATH}
 
-# 运行阶段
+# Runtime stage
 FROM alpine:3.21
 COPY --from=builder /app/server /app/server
 COPY --from=builder /app/configs/ /app/configs/
-# gateway/worker 直接运行; user/file 带 -conf 启动
+# gateway/worker run directly, user/file start with -conf
 ```
 
 特点：
@@ -103,37 +103,37 @@ docker-compose.yml 使用 `depends_on` + `condition` 控制启动顺序。
 通过 `.env` 文件或直接设置环境变量：
 
 ```bash
-# 数据库
+# Database
 DB_PASSWORD=root123
 DB_NAME=cloud_disk
 
 # JWT
 JWT_SECRET=your_jwt_secret
 
-# OSS (可选)
+# OSS (optional)
 OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
 OSS_ACCESS_KEY_ID=your_key
 OSS_ACCESS_KEY_SECRET=your_secret
 OSS_BUCKET_NAME=your_bucket
 
-# 版本
+# Version
 VERSION=v3.0.0
 ```
 
 ## 本地开发模式
 
 ```bash
-# 1. 启动基础设施
+# 1. Start infrastructure
 make infra-up
 
-# 2. 等待 Consul UI 可用: http://localhost:8500
+# 2. Wait for Consul UI: http://localhost:8500
 
-# 3. 在不同终端启动三个服务
+# 3. Start three services in separate terminals
 make run-user      # 终端 1
 make run-file      # 终端 2
 make run-gateway   # 终端 3
 
-# 4. 测试 API
+# 4. Test APIs
 curl http://localhost:8080/health
 curl -X POST http://localhost:8080/api/v1/user/register \
   -H "Content-Type: application/json" \

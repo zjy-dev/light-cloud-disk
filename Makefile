@@ -9,12 +9,12 @@ else
 	API_PROTO_FILES=$(shell find api -name "*.proto")
 endif
 
-# App-specific conf proto files
+# Service-specific config proto files
 USER_CONF_PROTO=app/user/internal/conf/conf.proto
 FILE_CONF_PROTO=app/file/internal/conf/conf.proto
 
 .PHONY: init
-# Install protoc plugins and tools
+# Install protoc plugins and developer tools
 init:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
@@ -22,7 +22,7 @@ init:
 	go install github.com/google/wire/cmd/wire@latest
 
 .PHONY: api
-# Generate API proto (gRPC only, no HTTP)
+# Generate API proto code (gRPC only, no HTTP)
 api:
 	protoc --proto_path=./api \
 		   --proto_path=./third_party \
@@ -31,11 +31,11 @@ api:
 		   $(API_PROTO_FILES)
 
 .PHONY: conf
-# Generate conf proto for all services
+# Generate config proto code for all services
 conf: conf-user conf-file
 
 .PHONY: conf-user
-# Generate conf proto for user service
+# Generate config proto code for user service
 conf-user:
 	protoc --proto_path=./app/user/internal/conf \
 		   --proto_path=./third_party \
@@ -43,7 +43,7 @@ conf-user:
 		   $(USER_CONF_PROTO)
 
 .PHONY: conf-file
-# Generate conf proto for file service
+# Generate config proto code for file service
 conf-file:
 	protoc --proto_path=./app/file/internal/conf \
 		   --proto_path=./third_party \
@@ -51,16 +51,16 @@ conf-file:
 		   $(FILE_CONF_PROTO)
 
 .PHONY: wire
-# Generate wire injection for all services
+# Generate Wire injectors for all services
 wire: wire-user wire-file
 
 .PHONY: wire-user
-# Generate wire injection for user service
+# Generate Wire injectors for user service
 wire-user:
 	cd app/user/cmd && wire
 
 .PHONY: wire-file
-# Generate wire injection for file service
+# Generate Wire injectors for file service
 wire-file:
 	cd app/file/cmd && wire
 
@@ -84,7 +84,7 @@ build-worker:
 	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/file-worker ./app/file/cmd/worker
 
 .PHONY: build-gateway
-# Build gateway
+# Build gateway service
 build-gateway:
 	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/gateway ./app/gateway/cmd
 
@@ -112,7 +112,7 @@ run-file:
 	go run ./app/file/cmd -conf ./app/file/configs/
 
 .PHONY: run-gateway
-# Run gateway locally
+# Run gateway service locally
 run-gateway:
 	go run ./app/gateway/cmd
 
@@ -121,7 +121,7 @@ run-gateway:
 run-worker:
 	go run ./app/file/cmd/worker
 
-# ─── Frontend ───────────────────────────────────────────────
+# --- Frontend ---
 
 .PHONY: fe-install
 # Install frontend dependencies
@@ -148,12 +148,12 @@ fe-test:
 fe-lint:
 	cd frontend && pnpm lint
 
-# ─── Full build ─────────────────────────────────────────────
+# --- Full build ---
 
 .PHONY: all
 all: api conf wire build fe-build
 
-# Container runtime detection (prefer podman)
+# Detect container runtime (prefer podman)
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 COMPOSE_RUNTIME := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null)
 
@@ -168,7 +168,7 @@ image-file:
 	$(CONTAINER_RUNTIME) build --build-arg SERVICE=file --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-service:$(VERSION) .
 
 .PHONY: image-gateway
-# Build gateway container image
+# Build gateway service container image
 image-gateway:
 	$(CONTAINER_RUNTIME) build --build-arg SERVICE=gateway --build-arg VERSION=$(VERSION) -t light-cloud-disk/gateway:$(VERSION) .
 
@@ -195,7 +195,7 @@ ps:
 
 # Infrastructure only (for local development)
 .PHONY: infra-up
-# Start infrastructure services (MySQL, Redis, Kafka, Consul)
+# Start infra services (MySQL, Redis, Kafka, Consul)
 infra-up:
 	$(COMPOSE_RUNTIME) up -d mysql redis kafka consul
 

@@ -15,7 +15,7 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-// seaweedFSClient implements biz.ObjectStorage using S3-compatible API.
+// seaweedFSClient implements biz.ObjectStorage using S3-compatible API
 type seaweedFSClient struct {
 	client    *s3.Client
 	presigner *s3.PresignClient
@@ -24,12 +24,12 @@ type seaweedFSClient struct {
 	log       *log.Helper
 }
 
-// NewSeaweedFSClient creates a SeaweedFS S3-compatible client.
+// NewSeaweedFSClient creates a SeaweedFS S3-compatible client
 func NewSeaweedFSClient(c *conf.Storage, logger log.Logger) (biz.ObjectStorage, error) {
 	helper := log.NewHelper(logger)
 
 	if c == nil || c.Seaweedfs == nil || c.Seaweedfs.Endpoint == "" {
-		helper.Warn("seaweedfs not configured, using noop object storage")
+		helper.Warn("SeaweedFS is not configured. Falling back to no-op object storage.")
 		return &noopObjectStorage{}, nil
 	}
 
@@ -69,11 +69,11 @@ func NewSeaweedFSClient(c *conf.Storage, logger log.Logger) (biz.ObjectStorage, 
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
-		// Ignore "bucket already exists" errors
-		helper.Infof("seaweedfs create bucket %s: %v (may already exist)", bucket, err)
+		// Ignore errors when bucket already exists
+		helper.Infof("CreateBucket returned for %s: %v (it may already exist)", bucket, err)
 	}
 
-	helper.Infof("seaweedfs client connected to %s, bucket=%s", endpoint, bucket)
+	helper.Infof("SeaweedFS client is ready. endpoint=%s bucket=%s", endpoint, bucket)
 
 	return &seaweedFSClient{
 		client:    client,
@@ -124,7 +124,7 @@ func (s *seaweedFSClient) PresignGetURL(ctx context.Context, key string, expires
 	return req.URL, nil
 }
 
-// noopObjectStorage is used when SeaweedFS is not configured.
+// noopObjectStorage is used when SeaweedFS is not configured
 type noopObjectStorage struct{}
 
 func (n *noopObjectStorage) Put(_ context.Context, _ string, _ io.Reader, _ int64) error {

@@ -32,7 +32,7 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		helper.Errorf("failed to connect database: %v", err)
+		helper.Errorf("Failed to connect to MySQL: %v", err)
 		return nil, nil, err
 	}
 
@@ -47,17 +47,17 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 	})
 
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		helper.Errorf("failed to connect redis: %v", err)
+		helper.Errorf("Failed to connect to Redis: %v", err)
 		return nil, nil, err
 	}
 
-	// Auto migrate file-related tables
+	// Auto-migrate file-related tables
 	if err := db.AutoMigrate(&FilePO{}, &FileStorePO{}, &SharePO{}); err != nil {
-		helper.Errorf("auto migrate failed: %v", err)
+		helper.Errorf("Auto migration for file tables failed: %v", err)
 	}
 
 	cleanup := func() {
-		helper.Info("closing data resources")
+		helper.Info("Closing file-service data resources.")
 		sqlDB.Close()
 		rdb.Close()
 	}

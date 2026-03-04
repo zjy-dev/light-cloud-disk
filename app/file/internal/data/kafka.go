@@ -14,21 +14,21 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-// kafkaProducer implements biz.MessageProducer using segmentio/kafka-go.
+// kafkaProducer implements biz.MessageProducer using segmentio/kafka-go
 type kafkaProducer struct {
 	cloudMigrateWriter *kafka.Writer
 	thumbnailWriter    *kafka.Writer
 	log                *log.Helper
 }
 
-// NewKafkaProducer creates a Kafka-backed MessageProducer.
-// If no brokers are configured, it returns a no-op producer that silently drops messages.
+// NewKafkaProducer creates a Kafka-backed message producer
+// If no brokers are configured, it returns a no-op producer that drops messages safely
 func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, func(), error) {
 	helper := log.NewHelper(logger)
 
 	brokers := resolveBrokers(c)
 	if len(brokers) == 0 {
-		helper.Warn("kafka brokers not configured, using no-op message producer")
+		helper.Warn("Kafka brokers are not configured. Falling back to no-op message producer.")
 		return &noopProducer{}, func() {}, nil
 	}
 
@@ -43,7 +43,7 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 		}
 	}
 
-	helper.Infof("kafka producer connecting to %v, topics: %s, %s", brokers, cloudMigrateTopic, thumbnailTopic)
+	helper.Infof("Connecting Kafka producer. brokers=%v, topics=[%s, %s]", brokers, cloudMigrateTopic, thumbnailTopic)
 
 	newWriter := func(topic string) *kafka.Writer {
 		return &kafka.Writer{
@@ -51,7 +51,7 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 			Topic:        topic,
 			Balancer:     &kafka.LeastBytes{},
 			RequiredAcks: kafka.RequireAll,
-			Async:        false, // synchronous for reliability
+			Async:        false, // Use synchronous sends for better reliability
 		}
 	}
 
@@ -61,13 +61,13 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 		log:                helper,
 	}
 	cleanup := func() {
-		helper.Info("closing kafka producers")
+		helper.Info("Closing Kafka producers.")
 		p.Close()
 	}
 	return p, cleanup, nil
 }
 
-// resolveBrokers reads broker addresses from conf or KAFKA_BROKERS env var.
+// resolveBrokers reads broker addresses from config or KAFKA_BROKERS
 func resolveBrokers(c *conf.Data) []string {
 	// Environment variable takes precedence
 	if env := os.Getenv("KAFKA_BROKERS"); env != "" {
@@ -89,7 +89,7 @@ func (p *kafkaProducer) SendCloudMigrateMessage(ctx context.Context, msg *biz.Cl
 		Value: data,
 	})
 	if err != nil {
-		p.log.Errorf("failed to write cloud migrate message: %v", err)
+		p.log.Errorf("Failed to publish cloud-migrate message: %v", err)
 	}
 	return err
 }
@@ -104,7 +104,7 @@ func (p *kafkaProducer) SendThumbnailMessage(ctx context.Context, msg *biz.Thumb
 		Value: data,
 	})
 	if err != nil {
-		p.log.Errorf("failed to write thumbnail message: %v", err)
+		p.log.Errorf("Failed to publish thumbnail message: %v", err)
 	}
 	return err
 }
@@ -123,7 +123,7 @@ func (p *kafkaProducer) Close() error {
 	return nil
 }
 
-// noopProducer is used when Kafka is not configured.
+// noopProducer is used when Kafka is not configured
 type noopProducer struct{}
 
 func (p *noopProducer) SendCloudMigrateMessage(_ context.Context, _ *biz.CloudMigrateMessage) error {

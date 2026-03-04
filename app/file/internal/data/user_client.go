@@ -9,7 +9,7 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
 )
 
-// userClient implements biz.UserClient by calling user-service via gRPC.
+// userClient implements biz.UserClient by calling user-service via gRPC
 type userClient struct {
 	client userv1.UserServiceClient
 	log    *log.Helper

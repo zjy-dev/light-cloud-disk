@@ -222,7 +222,7 @@ func parseJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	return result
 }
 
-// --- UserHandler Tests ---
+// --- UserHandler tests ---
 
 func TestUserHandler_Register_Success(t *testing.T) {
 	userClient := &mockUserClient{
@@ -370,7 +370,7 @@ func TestUserHandler_UpdateUserInfo_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// --- FileHandler Tests ---
+// --- FileHandler tests ---
 
 func TestFileHandler_ListFiles_Success(t *testing.T) {
 	fileClient := &mockFileClient{
@@ -553,10 +553,10 @@ func TestFileHandler_GetDiskUsage_Success(t *testing.T) {
 	fileClient := &mockFileClient{
 		getDiskUsageFn: func(_ context.Context, _ *filev1.GetDiskUsageRequest, _ ...grpc.CallOption) (*filev1.GetDiskUsageReply, error) {
 			return &filev1.GetDiskUsageReply{
-				LocalUsedBytes:      1024,
-				LocalMaxBytes:       10737418240,
-				SeaweedfsUsedBytes:  2048,
-				SeaweedfsMaxBytes:   53687091200,
+				LocalUsedBytes:     1024,
+				LocalMaxBytes:      10737418240,
+				SeaweedfsUsedBytes: 2048,
+				SeaweedfsMaxBytes:  53687091200,
 			}, nil
 		},
 	}

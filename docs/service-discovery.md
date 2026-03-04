@@ -24,20 +24,20 @@ import (
 )
 
 func main() {
-    // 1. 创建 Consul 客户端
+    // 1. Create Consul client
     consulCli, _ := consulapi.NewClient(&consulapi.Config{
         Address: os.Getenv("CONSUL_ADDR"), // e.g. "localhost:8500"
     })
-    // 2. 创建 Kratos 注册器
+    // 2. Create Kratos registrar
     r := consul.New(consulCli)
-    // 3. 启动 Kratos app，自动注册
+    // 3. Start Kratos app and register automatically
     app := kratos.New(
         kratos.Name("user-service"),
         kratos.Server(grpcSrv),
         kratos.Registrar(r),
     )
     app.Run() // 注册到 Consul
-    // app.Stop() 时自动注销
+    // app.Stop() automatically deregisters service
 }
 ```
 
@@ -71,7 +71,7 @@ func NewServiceClients() *ServiceClients {
     })
     r := consul.New(consulCli)
 
-    // 使用 discovery:/// 协议前缀
+    // Use discovery:/// endpoint scheme
     userConn, _ := kratosgrpc.DialInsecure(ctx,
         kratosgrpc.WithEndpoint("discovery:///user-service"),
         kratosgrpc.WithDiscovery(r),
@@ -87,13 +87,13 @@ File Service 通过相同模式发现 User Service，调用 `UpdateStorageUsed` 
 
 ```go
 // app/file/cmd/main.go
-// 发现 user-service 获取 gRPC 连接
+// Discover user-service and create gRPC connection
 userConn, _ := kratosgrpc.DialInsecure(ctx,
     kratosgrpc.WithEndpoint("discovery:///user-service"),
     kratosgrpc.WithDiscovery(r),
 )
 userServiceClient := userv1.NewUserServiceClient(userConn)
-// 传入 File Service 的 Wire 依赖注入
+// Pass into File Service Wire dependency injection
 ```
 
 ## 通信拓扑
@@ -133,12 +133,12 @@ File Service 调用 User Service 更新存储用量时，如果 User Service 不
 ```go
 // app/file/internal/biz/file.go
 func (uc *FileUsecase) MergeChunks(...) error {
-    // ... 合并文件逻辑
+    // ... file merge logic
     
-    // 更新存储用量 - 容错处理
+    // Update storage usage with fault tolerance
     if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
         uc.log.Warnf("failed to update storage used for user %d: %v", userID, err)
-        // 不 return error，文件合并已成功
+        // Do not return error because file merge already succeeded
     }
     return nil
 }
@@ -155,10 +155,10 @@ func (uc *FileUsecase) MergeChunks(...) error {
 所有服务通过环境变量 `CONSUL_ADDR` 配置 Consul 地址：
 
 ```yaml
-# 本地开发
+# Local development
 CONSUL_ADDR=localhost:8500
 
-# Docker Compose 内
+# Inside Docker Compose
 CONSUL_ADDR=consul:8500
 ```
 

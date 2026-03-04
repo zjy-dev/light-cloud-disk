@@ -18,7 +18,7 @@ var (
 )
 
 func init() {
-	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
+	flag.StringVar(&addr, "addr", ":8080", "HTTP 监听地址")
 }
 
 func main() {
@@ -55,15 +55,15 @@ func main() {
 		api.GET("/share/:share_id", fileHandler.GetShare)
 	}
 
-	// Protected routes (JWT auth required)
+	// Protected routes (JWT required)
 	auth := api.Group("")
 	auth.Use(middleware.JWTAuth())
 	{
-		// User
+		// User routes
 		auth.GET("/user/info", userHandler.GetUserInfo)
 		auth.PUT("/user/info", userHandler.UpdateUserInfo)
 
-		// File
+		// File routes
 		auth.POST("/file/check-upload", fileHandler.CheckUpload)
 		auth.POST("/file/upload-chunk", fileHandler.UploadChunk)
 		auth.POST("/file/merge-chunks", fileHandler.MergeChunks)
@@ -76,12 +76,12 @@ func main() {
 		auth.GET("/files/search", fileHandler.SearchFiles)
 		auth.GET("/disk-usage", fileHandler.GetDiskUsage)
 
-		// Trash
+		// Trash routes
 		auth.GET("/trash", fileHandler.ListTrash)
 		auth.POST("/trash/restore", fileHandler.RestoreFile)
 		auth.DELETE("/trash", fileHandler.PermanentDelete)
 
-		// Share
+		// Share routes
 		auth.POST("/share", fileHandler.CreateShare)
 	}
 

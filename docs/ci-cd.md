@@ -64,13 +64,13 @@
 ## 构建命令
 
 ```bash
-# 编译所有服务
+# Build all services
 make build-user     # → bin/user-service
 make build-file     # → bin/file-service
 make build-gateway  # → bin/gateway
 make build-worker   # → bin/file-worker
 
-# 或手动编译
+# Or build manually
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/user-service ./app/user/cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/file-service ./app/file/cmd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/gateway ./app/gateway/cmd
@@ -80,7 +80,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/file-worker ./app/file/cmd
 ## 容器镜像发布
 
 ```bash
-# 构建并推送到 GHCR
+# Build and push images to GHCR
 make image-user VERSION=v3.0.0
 make image-file VERSION=v3.0.0
 make image-gateway VERSION=v3.0.0
@@ -89,14 +89,14 @@ make image-gateway VERSION=v3.0.0
 ## 发布流程
 
 ```bash
-# 1. 确保所有测试通过
+# 1. Make sure all tests pass
 go test ./...
 
-# 2. 创建并推送 tag
+# 2. Create and push a tag
 git tag v3.0.0
 git push origin v3.0.0
 
-# 3. GitHub Actions 自动创建 Release
+# 3. GitHub Actions creates the Release automatically
 ```
 
 ## 面试要点

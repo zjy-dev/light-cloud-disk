@@ -78,7 +78,7 @@ async function computeMd5(file: File, onProgress?: (pct: number) => void): Promi
     const buffer = await slice.arrayBuffer()  // 每次只读 2MB
     spark.append(buffer)
     onProgress?.((i + 1) / totalChunks)
-    // 关键：让出事件循环，Vue 响应式更新 UI
+    // Key point: yield to event loop so Vue can refresh UI
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
 
@@ -124,20 +124,20 @@ async function computeMd5(file: File, onProgress?: (pct: number) => void): Promi
 ```go
 // app/file/internal/biz/file.go
 func (uc *FileUsecase) MergeChunks(ctx context.Context, ...) error {
-    // ... 本地分块合并
+    // ... merge local chunks
 
-    // 上传到 SeaweedFS (失败则兜底 OSS)
+    // upload to SeaweedFS (fallback to OSS on failure)
     if err := uc.objStore.Put(ctx, key, file); err != nil {
         uc.cloudStore.Put(ctx, key, file)
     }
 
-    // 通过 gRPC 调用 User Service (Consul 发现)
+    // call User Service via gRPC (discovered by Consul)
     if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
         uc.log.Warnf("failed to update storage: %v", err)
-        // 容错: 不影响合并结果
+        // fault tolerance: do not fail merge on this error
     }
 
-    // 异步 LRU 淘汰检查
+    // async LRU eviction check
     go uc.maybeEvictToCloud(context.Background())
     return nil
 }
@@ -148,19 +148,19 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, ...) error {
 ```go
 // app/file/internal/biz/file.go
 func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, error) {
-    // 1. 检查本地磁盘是否已满
+    // 1. Check whether local disk is full
     localUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
     if localUsed+fileSize > uc.storageCfg.LocalMaxBytes {
         return false, nil, true, nil  // disk_full = true
     }
 
-    // 2. 检查文件是否已存在（秒传）
+    // 2. Check whether file already exists (instant upload)
     store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
     if err == nil && store != nil {
         return true, nil, false, nil  // 可以秒传
     }
 
-    // 3. 获取已上传的分块（断点续传）
+    // 3. Get uploaded chunks (resume upload)
     uploadedChunks, err := uc.repo.GetUploadedChunks(ctx, fileMD5)
     if err != nil {
         return false, nil, false, err

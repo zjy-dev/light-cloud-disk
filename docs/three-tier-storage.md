@@ -60,17 +60,17 @@ CheckUpload → SaveChunk → MergeChunks
 ### 2. 合并上传（SeaweedFS / OSS 兜底）
 
 ```go
-// MergeChunks 核心逻辑
+// Core MergeChunks logic
 func (uc *FileUsecase) MergeChunks(...) {
-    // 1. 合并本地分块为完整文件
+    // 1. Merge local chunks into a complete file
     tmpPath := merge(chunks)
 
-    // 2. 上传到 SeaweedFS
+    // 2. Upload to SeaweedFS
     key := md5 + "/" + filename
     err := uc.objStore.Put(ctx, key, file)
 
     if err != nil {
-        // SeaweedFS 不可用 → 直接上传 OSS 兜底
+        // SeaweedFS unavailable -> upload to OSS as fallback
         err = uc.cloudStore.Put(ctx, key, file)
         storageType = "oss"
     } else {
@@ -78,10 +78,10 @@ func (uc *FileUsecase) MergeChunks(...) {
         uc.repo.IncrDiskUsage(ctx, "seaweedfs", fileSize)
     }
 
-    // 3. 写入 DB
+    // 3. Write metadata to DB
     store = &FileStore{StorageType: storageType, Location: key}
 
-    // 4. 触发淘汰检查
+    // 4. Trigger eviction check
     go uc.maybeEvictToCloud(ctx)
 }
 ```
@@ -179,7 +179,7 @@ type ObjectStorage interface {
     PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error)
 }
 
-// CloudStorage — 阿里云 OSS
+// CloudStorage - Alibaba Cloud OSS
 type CloudStorage interface {
     Put(ctx context.Context, key string, r io.Reader) error
     Delete(ctx context.Context, key string) error

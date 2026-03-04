@@ -75,18 +75,18 @@ app/gateway/
 func JWTAuth() gin.HandlerFunc {
     secret := os.Getenv("JWT_SECRET")
     return func(c *gin.Context) {
-        // 1. 从 Header 提取 token
+        // 1. Extract token from Authorization header
         authHeader := c.GetHeader("Authorization")
         parts := strings.SplitN(authHeader, " ", 2)
-        // 2. Bearer 前缀校验
-        // 3. 解析并验证 JWT
+        // 2. Validate Bearer prefix
+        // 3. Parse and verify JWT
         token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
             return []byte(secret), nil
         })
-        // 4. 提取 claims 中的 user_id
+        // 4. Read user_id from claims
         claims := token.Claims.(jwt.MapClaims)
         userID := int64(claims["user_id"].(float64))
-        // 5. 写入 Gin Context，后续 Handler 通过 c.GetInt64("user_id") 获取
+        // 5. Store user_id in Gin context for downstream handlers
         c.Set("user_id", userID)
     }
 }
@@ -103,15 +103,15 @@ Handler 层负责将 HTTP 请求转换为 gRPC 调用：
 
 ```go
 func (h *UserHandler) Register(c *gin.Context) {
-    // 1. 绑定 HTTP JSON body → proto Request
+    // 1. Bind HTTP JSON body to proto request
     var req userv1.RegisterRequest
     if err := c.ShouldBindJSON(&req); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    // 2. 调用 gRPC
+    // 2. Call gRPC method
     reply, err := h.clients.User.Register(c.Request.Context(), &req)
-    // 3. 返回 proto Reply 作为 JSON
+    // 3. Return proto reply as JSON
     c.JSON(http.StatusOK, reply)
 }
 ```
@@ -150,7 +150,7 @@ userClient := &mockUserClient{
     },
 }
 h := NewUserHandler(newTestClients(userClient, &mockFileClient{}))
-// 构造 HTTP 请求，验证响应
+// Build HTTP request and verify response
 ```
 
 ### Middleware 测试 (8 个)

@@ -14,19 +14,19 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-// ossClient implements biz.CloudStorage using Alibaba Cloud OSS v2 SDK.
+// ossClient implements biz.CloudStorage using Alibaba Cloud OSS v2 SDK
 type ossClient struct {
 	client *oss.Client
 	bucket string
 	log    *log.Helper
 }
 
-// NewOSSClient creates an Alibaba Cloud OSS client.
+// NewOSSClient creates an Alibaba Cloud OSS client
 func NewOSSClient(c *conf.Storage, logger log.Logger) (biz.CloudStorage, error) {
 	helper := log.NewHelper(logger)
 
 	if c == nil || c.Oss == nil || c.Oss.Endpoint == "" {
-		helper.Warn("alicloud OSS not configured, using noop cloud storage")
+		helper.Warn("Alibaba Cloud OSS is not configured. Falling back to no-op cloud storage.")
 		return &noopCloudStorage{}, nil
 	}
 
@@ -58,7 +58,7 @@ func NewOSSClient(c *conf.Storage, logger log.Logger) (biz.CloudStorage, error) 
 		bucket = "light-cloud-disk"
 	}
 
-	helper.Infof("alicloud OSS client connected to %s, bucket=%s", c.Oss.Endpoint, bucket)
+	helper.Infof("Alibaba Cloud OSS client is ready. endpoint=%s bucket=%s", c.Oss.Endpoint, bucket)
 
 	return &ossClient{
 		client: client,
@@ -106,7 +106,7 @@ func (o *ossClient) PresignGetURL(ctx context.Context, key string, expires time.
 	return result.URL, nil
 }
 
-// noopCloudStorage is used when cloud storage is not configured.
+// noopCloudStorage is used when cloud storage is not configured
 type noopCloudStorage struct{}
 
 func (n *noopCloudStorage) Put(_ context.Context, _ string, _ io.Reader, _ int64) error {

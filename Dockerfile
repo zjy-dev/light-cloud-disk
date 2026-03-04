@@ -1,4 +1,4 @@
-# Build stage - use vendor mode to avoid network access during build
+# Build stage uses vendor mode to avoid external network access
 FROM docker.io/library/golang:1.25-alpine AS builder
 
 WORKDIR /src
@@ -10,8 +10,8 @@ COPY . .
 ARG SERVICE=user
 ARG VERSION=dev
 
-# SERVICE can be: user, file, gateway, worker
-# worker builds from ./app/file/cmd/worker; others from ./app/${SERVICE}/cmd
+# SERVICE can be user, file, gateway, or worker
+# worker builds from ./app/file/cmd/worker, others build from ./app/${SERVICE}/cmd
 RUN set -e; \
     if [ "$SERVICE" = "worker" ]; then \
       BUILD_PATH=./app/file/cmd/worker; \
@@ -24,7 +24,7 @@ RUN set -e; \
       -o /app/server \
       ${BUILD_PATH}
 
-# Prepare configs (user/file need YAML configs; gateway/worker read env only)
+# Prepare config files (user/file use YAML, gateway/worker mainly read env vars)
 RUN mkdir -p /app/configs && \
     if [ "$SERVICE" != "worker" ]; then \
       cp -r app/${SERVICE}/configs/* /app/configs/ 2>/dev/null || true; \
@@ -47,7 +47,7 @@ ENV TZ=Asia/Shanghai
 
 EXPOSE 8080 9001 9002
 
-# gateway/worker: run directly; kratos services (user/file): use -conf flag
+# gateway/worker run directly, Kratos services (user/file) use -conf for config path
 CMD ["/bin/sh", "-c", \
     "if [ \"$SERVICE\" = \"gateway\" ] || [ \"$SERVICE\" = \"worker\" ]; then \
         /app/server; \

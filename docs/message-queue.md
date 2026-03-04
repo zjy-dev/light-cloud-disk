@@ -154,10 +154,10 @@ data:
 ## Docker 部署
 
 ```yaml
-# docker-compose.yml 中已包含：
-# - kafka (KRaft 模式, apache/kafka:3.7.0)
-# - seaweedfs (S3 兼容对象存储)
-# - file-worker (消费端, 独立容器)
+# Included in docker-compose.yml:
+# - kafka (KRaft mode, apache/kafka:3.7.0)
+# - seaweedfs (S3-compatible object storage)
+# - file-worker (consumer, standalone container)
 ```
 
 Worker 依赖 Kafka 健康检查通过后启动，与 file-service 独立部署，可独立扩缩容。

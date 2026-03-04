@@ -50,24 +50,24 @@ message Upload {
 }
 
 message Storage {
-  // local disk max bytes for chunk temp + merge temp
+  // Local disk max bytes for chunk temp and merge temp
   int64 local_max_bytes = 1;
 
   message SeaweedFS {
-    string endpoint = 1; // S3 API endpoint, e.g. http://seaweedfs:8333
-    string region = 2; // usually "us-east-1"
+    string endpoint = 1; // S3 API 端点，例如 http://seaweedfs:8333
+    string region = 2; // 通常为 "us-east-1"
     string bucket = 3;
-    string access_key = 4; // read from env SEAWEEDFS_ACCESS_KEY
-    string secret_key = 5; // read from env SEAWEEDFS_SECRET_KEY
-    int64 max_bytes = 6; // SeaweedFS total capacity
-    int32 threshold_percent = 7; // trigger eviction at this %
+    string access_key = 4; // 优先读取环境变量 SEAWEEDFS_ACCESS_KEY
+    string secret_key = 5; // 优先读取环境变量 SEAWEEDFS_SECRET_KEY
+    int64 max_bytes = 6; // SeaweedFS 总容量上限
+    int32 threshold_percent = 7; // 达到该百分比后触发淘汰
   }
 
   message OSS {
     string endpoint = 1;
     string bucket = 2;
-    string access_key_id = 3; // from env OSS_ACCESS_KEY_ID
-    string access_key_secret = 4; // from env OSS_ACCESS_KEY_SECRET
+    string access_key_id = 3; // 来自环境变量 OSS_ACCESS_KEY_ID
+    string access_key_secret = 4; // 来自环境变量 OSS_ACCESS_KEY_SECRET
     string region = 5;
   }
 

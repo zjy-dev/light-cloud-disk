@@ -78,12 +78,12 @@
 File Service 需要调用 User Service 更新存储用量。在 Biz 层定义接口，Data 层通过 gRPC 实现：
 
 ```go
-// biz/file.go - 定义接口
+// biz/file.go - interface definition
 type UserClient interface {
     UpdateStorageUsed(ctx context.Context, userID int64, sizeDelta int64) error
 }
 
-// data/user_client.go - gRPC 实现
+// data/user_client.go - gRPC implementation
 type userClientImpl struct {
     client userv1.UserServiceClient // gRPC 客户端
 }

@@ -330,11 +330,11 @@ func (r *fileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string,
 	actualMD5 := hex.EncodeToString(hasher.Sum(nil))
 	if actualMD5 != fileMD5 {
 		_ = os.Remove(storePath)
-		return "", fmt.Errorf("merged file md5 mismatch: expected %s, got %s", fileMD5, actualMD5)
+		return "", fmt.Errorf("merged file MD5 mismatch: expected %s, got %s", fileMD5, actualMD5)
 	}
 
 	if err := os.RemoveAll(chunkDir); err != nil {
-		r.log.Warnf("failed to remove chunk dir %s: %v", chunkDir, err)
+		r.log.Warnf("Could not remove chunk directory %s: %v", chunkDir, err)
 	}
 
 	return storePath, nil

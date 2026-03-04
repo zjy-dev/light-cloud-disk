@@ -51,7 +51,7 @@ describe('useTheme', () => {
     const { setTheme, themeMode } = useTheme()
 
     setTheme('dark')
-    // useStorage syncs the ref, check the ref value
+    // useStorage syncs the ref, so we check the ref value directly
     expect(themeMode.value).toBe('dark')
   })
 })

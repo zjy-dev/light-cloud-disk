@@ -15,16 +15,16 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/user/internal/conf"
 )
 
-// These tests require a running MySQL instance.
+// These integration tests require a running MySQL instance
 // Run with: go test -tags=integration -v ./app/user/internal/data/
 //
 // Required env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-// Or defaults: localhost:3306, root, root123, cloud_disk_test
+// Defaults: localhost:3306, root, root123, cloud_disk_test
 
 func setupTestData(t *testing.T) (*Data, func()) {
 	t.Helper()
 
-	// Set test DB defaults if not provided
+	// Set test defaults if env vars are missing
 	if os.Getenv("DB_HOST") == "" {
 		os.Setenv("DB_HOST", "localhost")
 	}
@@ -45,11 +45,11 @@ func setupTestData(t *testing.T) (*Data, func()) {
 	d, cleanup, err := NewData(&conf.Data{}, logger)
 	require.NoError(t, err)
 
-	// Auto-migrate for test
+	// Auto-migrate schema for tests
 	err = d.db.AutoMigrate(&UserPO{})
 	require.NoError(t, err)
 
-	// Clean table before each test
+	// Clean users table before each test
 	d.db.Exec("TRUNCATE TABLE users")
 
 	return d, cleanup

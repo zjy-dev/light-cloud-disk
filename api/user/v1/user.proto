@@ -9,7 +9,7 @@ service UserService {
   rpc Login (LoginRequest) returns (LoginReply);
   rpc GetUserInfo (GetUserInfoRequest) returns (GetUserInfoReply);
   rpc UpdateUserInfo (UpdateUserInfoRequest) returns (UpdateUserInfoReply);
-  // 内部 RPC，供 file-service 调用
+  // Internal RPC used by file service
   rpc UpdateStorageUsed (UpdateStorageUsedRequest) returns (UpdateStorageUsedReply);
 }
 

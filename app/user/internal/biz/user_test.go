@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockUserRepo is a testify mock for UserRepo.
+// MockUserRepo is a testify mock for UserRepo
 type MockUserRepo struct {
 	mock.Mock
 }
@@ -217,7 +217,7 @@ func TestUpdateUserInfo_PartialUpdate(t *testing.T) {
 	repo.On("FindByID", ctx, int64(1)).Return(existing, nil)
 	repo.On("Update", ctx, mock.AnythingOfType("*biz.User")).Return(nil)
 
-	// Only update nickname, leave email and avatar empty
+	// Only update nickname and keep email/avatar unchanged
 	err := uc.UpdateUserInfo(ctx, 1, "NewNick", "", "")
 
 	assert.NoError(t, err)

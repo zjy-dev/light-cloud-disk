@@ -63,7 +63,7 @@ export const fileApi = {
     return client.get<GetDownloadURLReply>(`/file/download/${fileId}`)
   },
 
-  // Upload
+  // Upload APIs
   checkUpload(data: { fileMd5: string; fileSize: number; totalChunks: number }) {
     return client.post<CheckUploadReply>('/file/check-upload', {
       file_md5: data.fileMd5,
@@ -97,7 +97,7 @@ export const fileApi = {
     })
   },
 
-  // Trash
+  // Trash APIs
   listTrash(params?: { page?: number; pageSize?: number }) {
     return client.get<ListTrashReply>('/trash', {
       params: {
@@ -119,7 +119,7 @@ export const fileApi = {
     })
   },
 
-  // Share
+  // Share APIs
   createShare(data: { fileId: number; expireDays: number; password?: string }) {
     return client.post<CreateShareReply>('/share', {
       file_id: data.fileId,

@@ -22,7 +22,7 @@ export const useFileStore = defineStore('file', () => {
   const sortedFiles = computed(() => {
     const sorted = [...files.value]
     sorted.sort((a, b) => {
-      // Folders always first
+      // Folders always come first
       if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1
 
       let cmp = 0
@@ -126,7 +126,7 @@ export const useFileStore = defineStore('file', () => {
     } else {
       selectedIds.value.add(id)
     }
-    // Trigger reactivity
+    // Reassign to trigger reactivity
     selectedIds.value = new Set(selectedIds.value)
   }
 

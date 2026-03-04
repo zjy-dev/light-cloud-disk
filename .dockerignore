@@ -2,21 +2,21 @@
 bin/
 dist/
 
-# Dependencies (vendor IS included for offline builds)
+# Dependencies (vendor is kept for offline builds)
 # vendor/
 
-# Frontend (exclude from backend image builds)
+# Frontend files (excluded from backend image builds)
 frontend/node_modules/
 frontend/coverage/
 frontend/.vscode/
 
-# IDE
+# IDE and editor files
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Git
+# Git metadata
 .git/
 .gitignore
 
@@ -29,14 +29,14 @@ LICENSE
 *_test.go
 coverage.out
 
-# Temp files
+# Temporary files
 tmp/
 store/
 *.log
 
-# Environment
+# Environment files
 .env
 .env.*
 
-# CI/CD
+# CI/CD files
 .github/

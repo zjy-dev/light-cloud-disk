@@ -13,7 +13,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// MockFileRepo
+// Mock FileRepo
 // ---------------------------------------------------------------------------
 
 type MockFileRepo struct {
@@ -142,7 +142,7 @@ func (m *MockFileRepo) IncrDiskUsage(ctx context.Context, diskType string, delta
 }
 
 // ---------------------------------------------------------------------------
-// MockUserClient
+// Mock UserClient
 // ---------------------------------------------------------------------------
 
 type MockUserClient struct {
@@ -154,7 +154,7 @@ func (m *MockUserClient) UpdateStorageUsed(ctx context.Context, userID int64, de
 }
 
 // ---------------------------------------------------------------------------
-// MockMessageProducer
+// Mock MessageProducer
 // ---------------------------------------------------------------------------
 
 type MockMessageProducer struct {
@@ -172,7 +172,7 @@ func (m *MockMessageProducer) Close() error {
 }
 
 // ---------------------------------------------------------------------------
-// MockObjectStorage (SeaweedFS)
+// Mock ObjectStorage (SeaweedFS)
 // ---------------------------------------------------------------------------
 
 type MockObjectStorage struct {
@@ -198,7 +198,7 @@ func (m *MockObjectStorage) PresignGetURL(ctx context.Context, key string, expir
 }
 
 // ---------------------------------------------------------------------------
-// MockCloudStorage (OSS)
+// Mock CloudStorage (OSS)
 // ---------------------------------------------------------------------------
 
 type MockCloudStorage struct {
@@ -228,8 +228,8 @@ func (m *MockCloudStorage) PresignGetURL(ctx context.Context, key string, expire
 // ---------------------------------------------------------------------------
 
 var defaultStorageCfg = &StorageConfig{
-	LocalMaxBytes:         10 * 1024 * 1024 * 1024, // 10 GB
-	SeaweedFSMaxBytes:     50 * 1024 * 1024 * 1024, // 50 GB
+	LocalMaxBytes:         10 * 1024 * 1024 * 1024, // 10GB
+	SeaweedFSMaxBytes:     50 * 1024 * 1024 * 1024, // 50GB
 	SeaweedFSThresholdPct: 80,
 }
 
@@ -335,7 +335,7 @@ func TestCheckUpload_DiskFull(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Return usage close to limit
+	// Mock usage close to limit
 	repo.On("GetDiskUsage", ctx, "local").Return(defaultStorageCfg.LocalMaxBytes-100, nil)
 
 	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5) // 1024 > 100 remaining
@@ -381,7 +381,7 @@ func TestSaveChunk_SizeMismatch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MergeChunks tests — dedup (existing store)
+// MergeChunks tests: dedup hit with existing store
 // ---------------------------------------------------------------------------
 
 func TestMergeChunks_ExistingStore(t *testing.T) {
@@ -432,7 +432,7 @@ func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListFiles
+// ListFiles tests
 // ---------------------------------------------------------------------------
 
 func TestListFiles_Success(t *testing.T) {
@@ -455,7 +455,7 @@ func TestListFiles_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CreateFolder
+// CreateFolder tests
 // ---------------------------------------------------------------------------
 
 func TestCreateFolder_Success(t *testing.T) {
@@ -478,7 +478,7 @@ func TestCreateFolder_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RenameFile
+// RenameFile tests
 // ---------------------------------------------------------------------------
 
 func TestRenameFile_Success(t *testing.T) {
@@ -526,7 +526,7 @@ func TestRenameFile_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// DeleteFiles
+// DeleteFiles tests
 // ---------------------------------------------------------------------------
 
 func TestDeleteFiles_Success(t *testing.T) {
@@ -546,7 +546,7 @@ func TestDeleteFiles_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MoveFiles
+// MoveFiles tests
 // ---------------------------------------------------------------------------
 
 func TestMoveFiles_Success(t *testing.T) {
@@ -570,7 +570,7 @@ func TestMoveFiles_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Trash
+// Trash tests
 // ---------------------------------------------------------------------------
 
 func TestListTrash_Success(t *testing.T) {
@@ -617,7 +617,7 @@ func TestPermanentDelete_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetDownloadURL — presigned URL from storage
+// GetDownloadURL tests: presigned URL from storage
 // ---------------------------------------------------------------------------
 
 func TestGetDownloadURL_SeaweedFS(t *testing.T) {
@@ -673,7 +673,7 @@ func TestGetDownloadURL_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetDiskUsage
+// GetDiskUsage tests
 // ---------------------------------------------------------------------------
 
 func TestGetDiskUsage(t *testing.T) {
@@ -694,7 +694,7 @@ func TestGetDiskUsage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Share
+// Share tests
 // ---------------------------------------------------------------------------
 
 func TestCreateShare_WithExpiry(t *testing.T) {
@@ -808,7 +808,7 @@ func TestGetShare_CorrectPassword(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SearchFiles
+// SearchFiles tests
 // ---------------------------------------------------------------------------
 
 func TestSearchFiles_Success(t *testing.T) {
@@ -831,14 +831,14 @@ func TestSearchFiles_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LRU eviction
+// LRU eviction tests
 // ---------------------------------------------------------------------------
 
 func TestMaybeEvictToCloud_TriggersWhenAboveThreshold(t *testing.T) {
 	d := newTestDeps()
 	ctx := context.Background()
 
-	// 50 GB max, 80% threshold = 40 GB threshold. Pass currentUsed = 42 GB (above).
+	// 50GB max, 80% threshold = 40GB. Pass 42GB to trigger eviction
 	d.repo.On("FindLRUStores", ctx, StorageSeaweedFS, 100).Return([]*FileStore{
 		{FileMD5: "file1", StorePath: "file1.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB
 		{FileMD5: "file2", StorePath: "file2.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB

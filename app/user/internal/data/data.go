@@ -29,7 +29,7 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		helper.Errorf("failed to connect database: %v", err)
+		helper.Errorf("Failed to connect to MySQL: %v", err)
 		return nil, nil, err
 	}
 
@@ -38,22 +38,22 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 	sqlDB.SetMaxOpenConns(int(c.Database.MaxOpenConns))
 
 	cleanup := func() {
-		helper.Info("closing data resources")
+		helper.Info("Closing user-service data resources.")
 		if err := sqlDB.Close(); err != nil {
-			helper.Errorf("failed to close database: %v", err)
+			helper.Errorf("Failed to close MySQL connection cleanly: %v", err)
 		}
 	}
 
-	// Auto migrate
+	// Auto-migrate user table
 	if err := db.AutoMigrate(&UserPO{}); err != nil {
-		helper.Errorf("auto migrate user table failed: %v", err)
+		helper.Errorf("Auto migration for user table failed: %v", err)
 	}
 
 	return &Data{db: db}, cleanup, nil
 }
 
-// UserPO is defined in user.go but referenced here for migration.
-// We keep it in user.go to keep domain-specific persistence together.
+// UserPO is defined in user.go and referenced here for migration
+// Keep UserPO near domain persistence definitions in user.go
 func HealthCheck(d *Data) error {
 	sqlDB, err := d.db.DB()
 	if err != nil {

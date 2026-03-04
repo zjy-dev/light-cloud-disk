@@ -250,7 +250,7 @@ func (h *FileHandler) GetShare(c *gin.Context) {
 
 	var req filev1.GetShareRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// Allow GET without body, use query params
+		// Allow GET without body and read password from query params
 		req.Password = c.Query("password")
 	}
 	req.ShareId = shareID

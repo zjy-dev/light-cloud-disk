@@ -5,41 +5,41 @@ package api.file.v1;
 option go_package = "github.com/J-Y-Zhang/light-cloud-disk/api/file/v1;v1";
 
 service FileService {
-  // 检查秒传和断点续传
+  // Check instant upload and resumable upload
   rpc CheckUpload (CheckUploadRequest) returns (CheckUploadReply);
-  // 上传文件分块
+  // Upload file chunk
   rpc UploadChunk (UploadChunkRequest) returns (UploadChunkReply);
-  // 合并文件分块
+  // Merge file chunks
   rpc MergeChunks (MergeChunksRequest) returns (MergeChunksReply);
-  // 获取用户文件列表
+  // Get user file list
   rpc ListFiles (ListFilesRequest) returns (ListFilesReply);
-  // 获取文件下载链接
+  // Get file download URL
   rpc GetDownloadURL (GetDownloadURLRequest) returns (GetDownloadURLReply);
-  // 删除文件（移到回收站）
+  // Delete files (move to trash)
   rpc DeleteFile (DeleteFileRequest) returns (DeleteFileReply);
-  // 重命名文件
+  // Rename file
   rpc RenameFile (RenameFileRequest) returns (RenameFileReply);
-  // 创建文件夹
+  // Create folder
   rpc CreateFolder (CreateFolderRequest) returns (CreateFolderReply);
-  // 移动文件/文件夹
+  // Move files or folders
   rpc MoveFile (MoveFileRequest) returns (MoveFileReply);
-  // 获取回收站列表
+  // Get trash list
   rpc ListTrash (ListTrashRequest) returns (ListTrashReply);
-  // 恢复回收站文件
+  // Restore files from trash
   rpc RestoreFile (RestoreFileRequest) returns (RestoreFileReply);
-  // 彻底删除文件
+  // Permanently delete files
   rpc PermanentDelete (PermanentDeleteRequest) returns (PermanentDeleteReply);
-  // 创建分享链接
+  // Create share link
   rpc CreateShare (CreateShareRequest) returns (CreateShareReply);
-  // 获取分享内容
+  // Get share content
   rpc GetShare (GetShareRequest) returns (GetShareReply);
-  // 搜索文件
+  // Search files
   rpc SearchFiles (SearchFilesRequest) returns (SearchFilesReply);
-  // 获取磁盘用量
+  // Get disk usage
   rpc GetDiskUsage (GetDiskUsageRequest) returns (GetDiskUsageReply);
 }
 
-// 秒传/断点续传检查
+// Instant upload and resumable upload check
 message CheckUploadRequest {
   string file_md5 = 1;
   int64 file_size = 2;
@@ -52,7 +52,7 @@ message CheckUploadReply {
   bool disk_full = 3;
 }
 
-// 分块上传
+// Chunk upload
 message UploadChunkRequest {
   string file_md5 = 1;
   int32 chunk_index = 2;
@@ -65,7 +65,7 @@ message UploadChunkReply {
   int32 chunk_index = 2;
 }
 
-// 合并分块
+// Merge chunks
 message MergeChunksRequest {
   int64 user_id = 1;
   int64 parent_id = 2;
@@ -80,7 +80,7 @@ message MergeChunksReply {
   FileInfo file = 2;
 }
 
-// 文件列表
+// File list
 message ListFilesRequest {
   int64 user_id = 1;
   int64 parent_id = 2;
@@ -93,7 +93,7 @@ message ListFilesReply {
   int64 total = 2;
 }
 
-// 文件信息
+// File info
 message FileInfo {
   int64 id = 1;
   string name = 2;
@@ -106,7 +106,7 @@ message FileInfo {
   int64 updated_at = 9;
 }
 
-// 下载
+// Download
 message GetDownloadURLRequest {
   int64 user_id = 1;
   int64 file_id = 2;
@@ -117,7 +117,7 @@ message GetDownloadURLReply {
   string file_name = 2;
 }
 
-// 删除文件
+// Delete files
 message DeleteFileRequest {
   int64 user_id = 1;
   repeated int64 file_ids = 2;
@@ -127,7 +127,7 @@ message DeleteFileReply {
   bool success = 1;
 }
 
-// 重命名
+// Rename
 message RenameFileRequest {
   int64 user_id = 1;
   int64 file_id = 2;
@@ -138,7 +138,7 @@ message RenameFileReply {
   bool success = 1;
 }
 
-// 创建文件夹
+// Create folder
 message CreateFolderRequest {
   int64 user_id = 1;
   int64 parent_id = 2;
@@ -150,7 +150,7 @@ message CreateFolderReply {
   FileInfo folder = 2;
 }
 
-// 移动文件
+// Move files
 message MoveFileRequest {
   int64 user_id = 1;
   repeated int64 file_ids = 2;
@@ -161,7 +161,7 @@ message MoveFileReply {
   bool success = 1;
 }
 
-// 回收站列表
+// Trash list
 message ListTrashRequest {
   int64 user_id = 1;
   int32 page = 2;
@@ -182,7 +182,7 @@ message TrashFileInfo {
   int64 expire_at = 6;
 }
 
-// 恢复文件
+// Restore files
 message RestoreFileRequest {
   int64 user_id = 1;
   repeated int64 file_ids = 2;
@@ -192,7 +192,7 @@ message RestoreFileReply {
   bool success = 1;
 }
 
-// 彻底删除
+// Permanent delete
 message PermanentDeleteRequest {
   int64 user_id = 1;
   repeated int64 file_ids = 2;
@@ -202,7 +202,7 @@ message PermanentDeleteReply {
   bool success = 1;
 }
 
-// 分享
+// Share
 message CreateShareRequest {
   int64 user_id = 1;
   int64 file_id = 2;
@@ -227,7 +227,7 @@ message GetShareReply {
   string download_url = 2;
 }
 
-// 搜索
+// Search
 message SearchFilesRequest {
   int64 user_id = 1;
   string keyword = 2;
@@ -240,7 +240,7 @@ message SearchFilesReply {
   int64 total = 2;
 }
 
-// 磁盘用量
+// Disk usage
 message GetDiskUsageRequest {}
 
 message GetDiskUsageReply {

@@ -187,7 +187,7 @@ make wire-file    # 生成文件服务依赖注入
 ### 配置环境变量
 ```bash
 cp .env.example .env
-# 编辑 .env 填入实际配置
+# Edit .env and fill in actual values
 ```
 
 ### 前端安装与运行

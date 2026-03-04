@@ -15,11 +15,11 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-// These tests require a running MySQL and Redis instance.
+// These integration tests require running MySQL and Redis instances
 // Run with: go test -tags=integration -v ./app/file/internal/data/
 //
 // Required env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, REDIS_ADDR
-// Or defaults: localhost:3306, root, root123, cloud_disk_test, localhost:6379
+// Defaults: localhost:3306, root, root123, cloud_disk_test, localhost:6379
 
 func setupTestData(t *testing.T) (*Data, func()) {
 	t.Helper()
@@ -47,7 +47,7 @@ func setupTestData(t *testing.T) (*Data, func()) {
 	d, cleanup, err := NewData(&conf.Data{}, logger)
 	require.NoError(t, err)
 
-	// Auto-migrate for test
+	// Auto-migrate schema for tests
 	err = d.db.AutoMigrate(&FilePO{}, &FileStorePO{}, &SharePO{})
 	require.NoError(t, err)
 
@@ -95,7 +95,7 @@ func TestIntegration_FileRepo_FindByUserAndParent(t *testing.T) {
 
 	repo.Create(ctx, &biz.File{UserID: 1, ParentID: 0, Name: "file1.txt"})
 	repo.Create(ctx, &biz.File{UserID: 1, ParentID: 0, Name: "file2.txt"})
-	repo.Create(ctx, &biz.File{UserID: 2, ParentID: 0, Name: "other.txt"}) // different user
+	repo.Create(ctx, &biz.File{UserID: 2, ParentID: 0, Name: "other.txt"}) // 不同用户的数据
 
 	files, total, err := repo.FindByUserAndParent(ctx, 1, 0, 1, 20)
 	assert.NoError(t, err)
@@ -115,7 +115,7 @@ func TestIntegration_FileRepo_SoftDeleteAndRestore(t *testing.T) {
 	err := repo.SoftDelete(ctx, int64(1), []int64{f.ID})
 	assert.NoError(t, err)
 
-	// Should appear in trash
+	// Should appear in trash after delete
 	trash, total, err := repo.FindTrash(ctx, 1, 1, 20)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1), total)
@@ -127,7 +127,7 @@ func TestIntegration_FileRepo_SoftDeleteAndRestore(t *testing.T) {
 	assert.Equal(t, int64(0), total)
 	assert.Empty(t, files)
 
-	// Restore
+	// Restore file
 	err = repo.Restore(ctx, int64(1), []int64{f.ID})
 	assert.NoError(t, err)
 
@@ -142,7 +142,7 @@ func TestIntegration_FileRepo_ChunkInfo(t *testing.T) {
 	repo := NewFileRepo(d, log.DefaultLogger)
 	ctx := context.Background()
 
-	// Save chunks
+	// Save chunk metadata
 	repo.SaveChunkInfo(ctx, &biz.ChunkInfo{FileMD5: "md5test", ChunkIndex: 0, ChunkSize: 512, Uploaded: true})
 	repo.SaveChunkInfo(ctx, &biz.ChunkInfo{FileMD5: "md5test", ChunkIndex: 1, ChunkSize: 512, Uploaded: true})
 	repo.SaveChunkInfo(ctx, &biz.ChunkInfo{FileMD5: "md5test", ChunkIndex: 3, ChunkSize: 512, Uploaded: true})
@@ -151,7 +151,7 @@ func TestIntegration_FileRepo_ChunkInfo(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, chunks, 3)
 
-	// Clear
+	// Clear chunk metadata
 	err = repo.ClearChunkInfo(ctx, "md5test")
 	assert.NoError(t, err)
 
