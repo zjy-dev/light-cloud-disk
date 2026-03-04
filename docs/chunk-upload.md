@@ -33,6 +33,7 @@
                     ┌──────────────────────────────────────┐
                     │            UploadChunk               │
                     │  Gateway: POST /api/v1/file/upload-chunk │
+                    │  multipart/form-data 二进制分块上传   │
                     │  分块写本地磁盘 + Redis INCRBY 计数    │
                     └───────────────┬──────────────────────┘
                                     │
@@ -116,6 +117,17 @@ async function computeMd5(file: File, onProgress?: (pct: number) => void): Promi
 3. 客户端从 `CheckUpload` 获取已上传列表
 4. 只上传缺失的分块
 5. 分块信息 24 小时过期
+
+## UploadChunk 协议
+
+`/api/v1/file/upload-chunk` 使用 `multipart/form-data`，字段如下：
+
+- `file_md5`: 文件 MD5
+- `chunk_index`: 分块序号（从 0 开始）
+- `chunk_size`: 分块字节数
+- `chunk_file`: 分块二进制内容
+
+这样做的好处是直接传二进制 chunk，避免 Base64 体积膨胀和编解码开销。
 
 ## 跨服务调用
 

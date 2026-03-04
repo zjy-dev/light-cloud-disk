@@ -41,15 +41,6 @@ export function useUpload() {
     return spark.end()
   }
 
-  function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer)
-    let binary = ''
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]!)
-    }
-    return btoa(binary)
-  }
-
   async function uploadFile(file: File, parentId: number, onComplete?: () => void) {
     const taskId = crypto.randomUUID()
     const task: UploadTask = {
@@ -103,14 +94,12 @@ export function useUpload() {
         const start = i * CHUNK_SIZE
         const end = Math.min(start + CHUNK_SIZE, file.size)
         const chunkBlob = file.slice(start, end)
-        const chunkBuffer = await chunkBlob.arrayBuffer()
-        const chunkData = arrayBufferToBase64(chunkBuffer)
 
         await fileApi.uploadChunk({
           fileMd5,
           chunkIndex: i,
           chunkSize: end - start,
-          chunkData,
+          chunkFile: chunkBlob,
         })
 
         uploaded++

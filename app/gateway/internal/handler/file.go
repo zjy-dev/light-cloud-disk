@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
@@ -40,13 +41,56 @@ func (h *FileHandler) CheckUpload(c *gin.Context) {
 }
 
 func (h *FileHandler) UploadChunk(c *gin.Context) {
-	var req filev1.UploadChunkRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	fileMD5 := c.PostForm("file_md5")
+	if fileMD5 == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_md5 is required"})
 		return
 	}
 
-	reply, err := h.clients.File.UploadChunk(c.Request.Context(), &req)
+	chunkIndex, err := strconv.ParseInt(c.PostForm("chunk_index"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_index"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("chunk_file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "chunk_file is required"})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read chunk_file"})
+		return
+	}
+	defer file.Close()
+
+	chunkData, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read chunk_file data"})
+		return
+	}
+
+	var chunkSize int64
+	if chunkSizeStr := c.PostForm("chunk_size"); chunkSizeStr != "" {
+		chunkSize, err = strconv.ParseInt(chunkSizeStr, 10, 32)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_size"})
+			return
+		}
+	} else {
+		chunkSize = int64(len(chunkData))
+	}
+
+	req := &filev1.UploadChunkRequest{
+		FileMd5:    fileMD5,
+		ChunkIndex: int32(chunkIndex),
+		ChunkSize:  int32(chunkSize),
+		ChunkData:  chunkData,
+	}
+
+	reply, err := h.clients.File.UploadChunk(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

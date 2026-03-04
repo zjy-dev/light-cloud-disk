@@ -10,6 +10,10 @@ const client = axios.create({
 })
 
 client.interceptors.request.use((config) => {
+  if (config.data instanceof FormData && config.headers) {
+    delete (config.headers as Record<string, string>)['Content-Type']
+  }
+
   const token = localStorage.getItem('light-cloud-token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`

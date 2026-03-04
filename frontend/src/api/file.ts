@@ -72,13 +72,14 @@ export const fileApi = {
     })
   },
 
-  uploadChunk(data: { fileMd5: string; chunkIndex: number; chunkSize: number; chunkData: string }) {
-    return client.post<UploadChunkReply>('/file/upload-chunk', {
-      file_md5: data.fileMd5,
-      chunk_index: data.chunkIndex,
-      chunk_size: data.chunkSize,
-      chunk_data: data.chunkData,
-    })
+  uploadChunk(data: { fileMd5: string; chunkIndex: number; chunkSize: number; chunkFile: Blob }) {
+    const formData = new FormData()
+    formData.append('file_md5', data.fileMd5)
+    formData.append('chunk_index', String(data.chunkIndex))
+    formData.append('chunk_size', String(data.chunkSize))
+    formData.append('chunk_file', data.chunkFile)
+
+    return client.post<UploadChunkReply>('/file/upload-chunk', formData)
   },
 
   mergeChunks(data: {

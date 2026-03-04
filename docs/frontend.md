@@ -97,7 +97,7 @@ frontend/src/
 
 **流程**:
 ```
-选择文件 → 计算 SHA-256 hash → 检查秒传(CheckUpload)
+选择文件 → 计算 MD5 hash → 检查秒传(CheckUpload)
   ├─ 可秒传 → 直接合并(MergeChunks) → 完成
   └─ 不可秒传 → 获取已上传分块列表
        → 逐块上传(跳过已传) → 合并(MergeChunks) → 完成
@@ -105,14 +105,14 @@ frontend/src/
 
 **实现要点**:
 - 分块大小 5MB (`CHUNK_SIZE = 5 * 1024 * 1024`)
-- 使用 Web Crypto API (`crypto.subtle.digest`) 计算 SHA-256
-- 分块数据以 Base64 编码传输
+- 使用 `spark-md5` 分块计算 MD5
+- 分块通过 `multipart/form-data` 二进制上传（不做 Base64 编码）
 - 全局任务队列 (`tasks` ref)，支持多文件并行上传
 - 状态追踪: `pending → hashing → uploading → merging → done | error`
 
 **面试要点**:
-- 为什么用 SHA-256 而非 MD5? —— SHA-256 更安全，碰撞概率更低
-- 为什么用 Base64 而非 FormData? —— 与后端 gRPC proto 定义一致，JSON 传输
+- 为什么用 MD5? —— 这里用于秒传去重和完整性校验，速度比 SHA-256 更快
+- 为什么改成 FormData? —— 直接传二进制 chunk，避免 Base64 约 33% 膨胀和额外编码开销
 - 断点续传原理: 后端返回已上传分块索引列表，前端跳过这些分块
 
 ### 4. 认证状态 (`src/stores/auth.ts`)

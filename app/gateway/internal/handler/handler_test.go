@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -220,6 +221,29 @@ func parseJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	err := json.Unmarshal(w.Body.Bytes(), &result)
 	assert.NoError(t, err)
 	return result
+}
+
+func multipartBody(t *testing.T, fields map[string]string, filename string, fileData []byte) (*bytes.Buffer, string) {
+	t.Helper()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	for k, v := range fields {
+		err := writer.WriteField(k, v)
+		assert.NoError(t, err)
+	}
+
+	part, err := writer.CreateFormFile("chunk_file", filename)
+	assert.NoError(t, err)
+
+	_, err = part.Write(fileData)
+	assert.NoError(t, err)
+
+	err = writer.Close()
+	assert.NoError(t, err)
+
+	return body, writer.FormDataContentType()
 }
 
 // --- UserHandler tests ---
@@ -547,6 +571,78 @@ func TestFileHandler_CheckUpload_DiskFull(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	result := parseJSON(t, w)
 	assert.Equal(t, true, result["disk_full"])
+}
+
+func TestFileHandler_UploadChunk_Success(t *testing.T) {
+	fileClient := &mockFileClient{
+		uploadChunkFn: func(_ context.Context, in *filev1.UploadChunkRequest, _ ...grpc.CallOption) (*filev1.UploadChunkReply, error) {
+			assert.Equal(t, "abc123", in.FileMd5)
+			assert.Equal(t, int32(2), in.ChunkIndex)
+			assert.Equal(t, int32(5), in.ChunkSize)
+			assert.Equal(t, []byte("hello"), in.ChunkData)
+			return &filev1.UploadChunkReply{
+				Success:    true,
+				ChunkIndex: in.ChunkIndex,
+			}, nil
+		},
+	}
+
+	h := NewFileHandler(newTestClients(&mockUserClient{}, fileClient))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body, contentType := multipartBody(t, map[string]string{
+		"file_md5":    "abc123",
+		"chunk_index": "2",
+		"chunk_size":  "5",
+	}, "chunk.part", []byte("hello"))
+	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
+	c.Request.Header.Set("Content-Type", contentType)
+
+	h.UploadChunk(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	result := parseJSON(t, w)
+	assert.Equal(t, true, result["success"])
+}
+
+func TestFileHandler_UploadChunk_MissingFile(t *testing.T) {
+	h := NewFileHandler(newTestClients(&mockUserClient{}, &mockFileClient{}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("file_md5", "abc123")
+	_ = writer.WriteField("chunk_index", "0")
+	_ = writer.WriteField("chunk_size", "5")
+	_ = writer.Close()
+
+	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
+	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	h.UploadChunk(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestFileHandler_UploadChunk_InvalidChunkIndex(t *testing.T) {
+	h := NewFileHandler(newTestClients(&mockUserClient{}, &mockFileClient{}))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	body, contentType := multipartBody(t, map[string]string{
+		"file_md5":    "abc123",
+		"chunk_index": "bad",
+		"chunk_size":  "5",
+	}, "chunk.part", []byte("hello"))
+	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
+	c.Request.Header.Set("Content-Type", contentType)
+
+	h.UploadChunk(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestFileHandler_GetDiskUsage_Success(t *testing.T) {

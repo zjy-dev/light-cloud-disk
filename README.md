@@ -263,6 +263,9 @@ go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 | DELETE | /api/v1/trash | 彻底删除 |
 | POST | /api/v1/share | 创建分享 |
 
+说明：
+- `POST /api/v1/file/upload-chunk` 使用 `multipart/form-data` 上传分块二进制（字段：`file_md5`、`chunk_index`、`chunk_size`、`chunk_file`）。
+
 ## 服务通信
 
 ```

@@ -116,6 +116,8 @@ func (h *UserHandler) Register(c *gin.Context) {
 }
 ```
 
+上传接口 `POST /api/v1/file/upload-chunk` 是一个特例：Gateway 使用 `multipart/form-data` 解析分块文件（二进制），再组装成 `UploadChunkRequest` 转发到 File Service。
+
 对于需要认证的路由，Handler 从 Gin Context 获取 `user_id` 并注入请求：
 
 ```go

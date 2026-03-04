@@ -216,7 +216,7 @@ frontend/
     │   └── file.ts          # 文件 API (20 个端点)
     ├── composables/
     │   ├── useTheme.ts      # 主题切换 (light/dark/system) + localStorage 持久化
-    │   ├── useUpload.ts     # 分块上传 (SHA-256 / 秒传 / 断点续传 / 进度追踪)
+    │   ├── useUpload.ts     # 分块上传 (MD5 / 秒传 / 断点续传 / multipart 上传 / 进度追踪)
     │   └── __tests__/       # composable 单元测试
     ├── components/
     │   ├── layout/          # AppLayout / AppSidebar / AppHeader
