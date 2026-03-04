@@ -31,6 +31,11 @@ func (h *FileHandler) CheckUpload(c *gin.Context) {
 		return
 	}
 
+	if reply.DiskFull {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "disk full, please retry later", "disk_full": true})
+		return
+	}
+
 	c.JSON(http.StatusOK, reply)
 }
 
@@ -287,6 +292,16 @@ func (h *FileHandler) GetDownloadURL(c *gin.Context) {
 		UserId: userID,
 		FileId: fileID,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, reply)
+}
+
+func (h *FileHandler) GetDiskUsage(c *gin.Context) {
+	reply, err := h.clients.File.GetDiskUsage(c.Request.Context(), &filev1.GetDiskUsageRequest{})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

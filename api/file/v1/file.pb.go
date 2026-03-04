@@ -86,6 +86,7 @@ type CheckUploadReply struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	CanFastUpload  bool                   `protobuf:"varint,1,opt,name=can_fast_upload,json=canFastUpload,proto3" json:"can_fast_upload,omitempty"`
 	UploadedChunks []int32                `protobuf:"varint,2,rep,packed,name=uploaded_chunks,json=uploadedChunks,proto3" json:"uploaded_chunks,omitempty"`
+	DiskFull       bool                   `protobuf:"varint,3,opt,name=disk_full,json=diskFull,proto3" json:"disk_full,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -132,6 +133,13 @@ func (x *CheckUploadReply) GetUploadedChunks() []int32 {
 		return x.UploadedChunks
 	}
 	return nil
+}
+
+func (x *CheckUploadReply) GetDiskFull() bool {
+	if x != nil {
+		return x.DiskFull
+	}
+	return false
 }
 
 // 分块上传
@@ -1900,6 +1908,111 @@ func (x *SearchFilesReply) GetTotal() int64 {
 	return 0
 }
 
+// 磁盘用量
+type GetDiskUsageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDiskUsageRequest) Reset() {
+	*x = GetDiskUsageRequest{}
+	mi := &file_file_v1_file_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDiskUsageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDiskUsageRequest) ProtoMessage() {}
+
+func (x *GetDiskUsageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_file_v1_file_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDiskUsageRequest.ProtoReflect.Descriptor instead.
+func (*GetDiskUsageRequest) Descriptor() ([]byte, []int) {
+	return file_file_v1_file_proto_rawDescGZIP(), []int{32}
+}
+
+type GetDiskUsageReply struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	LocalUsedBytes     int64                  `protobuf:"varint,1,opt,name=local_used_bytes,json=localUsedBytes,proto3" json:"local_used_bytes,omitempty"`
+	LocalMaxBytes      int64                  `protobuf:"varint,2,opt,name=local_max_bytes,json=localMaxBytes,proto3" json:"local_max_bytes,omitempty"`
+	SeaweedfsUsedBytes int64                  `protobuf:"varint,3,opt,name=seaweedfs_used_bytes,json=seaweedfsUsedBytes,proto3" json:"seaweedfs_used_bytes,omitempty"`
+	SeaweedfsMaxBytes  int64                  `protobuf:"varint,4,opt,name=seaweedfs_max_bytes,json=seaweedfsMaxBytes,proto3" json:"seaweedfs_max_bytes,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *GetDiskUsageReply) Reset() {
+	*x = GetDiskUsageReply{}
+	mi := &file_file_v1_file_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDiskUsageReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDiskUsageReply) ProtoMessage() {}
+
+func (x *GetDiskUsageReply) ProtoReflect() protoreflect.Message {
+	mi := &file_file_v1_file_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDiskUsageReply.ProtoReflect.Descriptor instead.
+func (*GetDiskUsageReply) Descriptor() ([]byte, []int) {
+	return file_file_v1_file_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *GetDiskUsageReply) GetLocalUsedBytes() int64 {
+	if x != nil {
+		return x.LocalUsedBytes
+	}
+	return 0
+}
+
+func (x *GetDiskUsageReply) GetLocalMaxBytes() int64 {
+	if x != nil {
+		return x.LocalMaxBytes
+	}
+	return 0
+}
+
+func (x *GetDiskUsageReply) GetSeaweedfsUsedBytes() int64 {
+	if x != nil {
+		return x.SeaweedfsUsedBytes
+	}
+	return 0
+}
+
+func (x *GetDiskUsageReply) GetSeaweedfsMaxBytes() int64 {
+	if x != nil {
+		return x.SeaweedfsMaxBytes
+	}
+	return 0
+}
+
 var File_file_v1_file_proto protoreflect.FileDescriptor
 
 const file_file_v1_file_proto_rawDesc = "" +
@@ -1908,10 +2021,11 @@ const file_file_v1_file_proto_rawDesc = "" +
 	"\x12CheckUploadRequest\x12\x19\n" +
 	"\bfile_md5\x18\x01 \x01(\tR\afileMd5\x12\x1b\n" +
 	"\tfile_size\x18\x02 \x01(\x03R\bfileSize\x12!\n" +
-	"\ftotal_chunks\x18\x03 \x01(\x05R\vtotalChunks\"c\n" +
+	"\ftotal_chunks\x18\x03 \x01(\x05R\vtotalChunks\"\x80\x01\n" +
 	"\x10CheckUploadReply\x12&\n" +
 	"\x0fcan_fast_upload\x18\x01 \x01(\bR\rcanFastUpload\x12'\n" +
-	"\x0fuploaded_chunks\x18\x02 \x03(\x05R\x0euploadedChunks\"\x8e\x01\n" +
+	"\x0fuploaded_chunks\x18\x02 \x03(\x05R\x0euploadedChunks\x12\x1b\n" +
+	"\tdisk_full\x18\x03 \x01(\bR\bdiskFull\"\x8e\x01\n" +
 	"\x12UploadChunkRequest\x12\x19\n" +
 	"\bfile_md5\x18\x01 \x01(\tR\afileMd5\x12\x1f\n" +
 	"\vchunk_index\x18\x02 \x01(\x05R\n" +
@@ -2033,7 +2147,13 @@ const file_file_v1_file_proto_rawDesc = "" +
 	"\tpage_size\x18\x04 \x01(\x05R\bpageSize\"U\n" +
 	"\x10SearchFilesReply\x12+\n" +
 	"\x05files\x18\x01 \x03(\v2\x15.api.file.v1.FileInfoR\x05files\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x03R\x05total2\xa2\t\n" +
+	"\x05total\x18\x02 \x01(\x03R\x05total\"\x15\n" +
+	"\x13GetDiskUsageRequest\"\xc7\x01\n" +
+	"\x11GetDiskUsageReply\x12(\n" +
+	"\x10local_used_bytes\x18\x01 \x01(\x03R\x0elocalUsedBytes\x12&\n" +
+	"\x0flocal_max_bytes\x18\x02 \x01(\x03R\rlocalMaxBytes\x120\n" +
+	"\x14seaweedfs_used_bytes\x18\x03 \x01(\x03R\x12seaweedfsUsedBytes\x12.\n" +
+	"\x13seaweedfs_max_bytes\x18\x04 \x01(\x03R\x11seaweedfsMaxBytes2\xf4\t\n" +
 	"\vFileService\x12M\n" +
 	"\vCheckUpload\x12\x1f.api.file.v1.CheckUploadRequest\x1a\x1d.api.file.v1.CheckUploadReply\x12M\n" +
 	"\vUploadChunk\x12\x1f.api.file.v1.UploadChunkRequest\x1a\x1d.api.file.v1.UploadChunkReply\x12M\n" +
@@ -2051,7 +2171,8 @@ const file_file_v1_file_proto_rawDesc = "" +
 	"\x0fPermanentDelete\x12#.api.file.v1.PermanentDeleteRequest\x1a!.api.file.v1.PermanentDeleteReply\x12M\n" +
 	"\vCreateShare\x12\x1f.api.file.v1.CreateShareRequest\x1a\x1d.api.file.v1.CreateShareReply\x12D\n" +
 	"\bGetShare\x12\x1c.api.file.v1.GetShareRequest\x1a\x1a.api.file.v1.GetShareReply\x12M\n" +
-	"\vSearchFiles\x12\x1f.api.file.v1.SearchFilesRequest\x1a\x1d.api.file.v1.SearchFilesReplyB6Z4github.com/J-Y-Zhang/light-cloud-disk/api/file/v1;v1b\x06proto3"
+	"\vSearchFiles\x12\x1f.api.file.v1.SearchFilesRequest\x1a\x1d.api.file.v1.SearchFilesReply\x12P\n" +
+	"\fGetDiskUsage\x12 .api.file.v1.GetDiskUsageRequest\x1a\x1e.api.file.v1.GetDiskUsageReplyB6Z4github.com/J-Y-Zhang/light-cloud-disk/api/file/v1;v1b\x06proto3"
 
 var (
 	file_file_v1_file_proto_rawDescOnce sync.Once
@@ -2065,7 +2186,7 @@ func file_file_v1_file_proto_rawDescGZIP() []byte {
 	return file_file_v1_file_proto_rawDescData
 }
 
-var file_file_v1_file_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_file_v1_file_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_file_v1_file_proto_goTypes = []any{
 	(*CheckUploadRequest)(nil),     // 0: api.file.v1.CheckUploadRequest
 	(*CheckUploadReply)(nil),       // 1: api.file.v1.CheckUploadReply
@@ -2099,6 +2220,8 @@ var file_file_v1_file_proto_goTypes = []any{
 	(*GetShareReply)(nil),          // 29: api.file.v1.GetShareReply
 	(*SearchFilesRequest)(nil),     // 30: api.file.v1.SearchFilesRequest
 	(*SearchFilesReply)(nil),       // 31: api.file.v1.SearchFilesReply
+	(*GetDiskUsageRequest)(nil),    // 32: api.file.v1.GetDiskUsageRequest
+	(*GetDiskUsageReply)(nil),      // 33: api.file.v1.GetDiskUsageReply
 }
 var file_file_v1_file_proto_depIdxs = []int32{
 	8,  // 0: api.file.v1.MergeChunksReply.file:type_name -> api.file.v1.FileInfo
@@ -2122,23 +2245,25 @@ var file_file_v1_file_proto_depIdxs = []int32{
 	26, // 18: api.file.v1.FileService.CreateShare:input_type -> api.file.v1.CreateShareRequest
 	28, // 19: api.file.v1.FileService.GetShare:input_type -> api.file.v1.GetShareRequest
 	30, // 20: api.file.v1.FileService.SearchFiles:input_type -> api.file.v1.SearchFilesRequest
-	1,  // 21: api.file.v1.FileService.CheckUpload:output_type -> api.file.v1.CheckUploadReply
-	3,  // 22: api.file.v1.FileService.UploadChunk:output_type -> api.file.v1.UploadChunkReply
-	5,  // 23: api.file.v1.FileService.MergeChunks:output_type -> api.file.v1.MergeChunksReply
-	7,  // 24: api.file.v1.FileService.ListFiles:output_type -> api.file.v1.ListFilesReply
-	10, // 25: api.file.v1.FileService.GetDownloadURL:output_type -> api.file.v1.GetDownloadURLReply
-	12, // 26: api.file.v1.FileService.DeleteFile:output_type -> api.file.v1.DeleteFileReply
-	14, // 27: api.file.v1.FileService.RenameFile:output_type -> api.file.v1.RenameFileReply
-	16, // 28: api.file.v1.FileService.CreateFolder:output_type -> api.file.v1.CreateFolderReply
-	18, // 29: api.file.v1.FileService.MoveFile:output_type -> api.file.v1.MoveFileReply
-	20, // 30: api.file.v1.FileService.ListTrash:output_type -> api.file.v1.ListTrashReply
-	23, // 31: api.file.v1.FileService.RestoreFile:output_type -> api.file.v1.RestoreFileReply
-	25, // 32: api.file.v1.FileService.PermanentDelete:output_type -> api.file.v1.PermanentDeleteReply
-	27, // 33: api.file.v1.FileService.CreateShare:output_type -> api.file.v1.CreateShareReply
-	29, // 34: api.file.v1.FileService.GetShare:output_type -> api.file.v1.GetShareReply
-	31, // 35: api.file.v1.FileService.SearchFiles:output_type -> api.file.v1.SearchFilesReply
-	21, // [21:36] is the sub-list for method output_type
-	6,  // [6:21] is the sub-list for method input_type
+	32, // 21: api.file.v1.FileService.GetDiskUsage:input_type -> api.file.v1.GetDiskUsageRequest
+	1,  // 22: api.file.v1.FileService.CheckUpload:output_type -> api.file.v1.CheckUploadReply
+	3,  // 23: api.file.v1.FileService.UploadChunk:output_type -> api.file.v1.UploadChunkReply
+	5,  // 24: api.file.v1.FileService.MergeChunks:output_type -> api.file.v1.MergeChunksReply
+	7,  // 25: api.file.v1.FileService.ListFiles:output_type -> api.file.v1.ListFilesReply
+	10, // 26: api.file.v1.FileService.GetDownloadURL:output_type -> api.file.v1.GetDownloadURLReply
+	12, // 27: api.file.v1.FileService.DeleteFile:output_type -> api.file.v1.DeleteFileReply
+	14, // 28: api.file.v1.FileService.RenameFile:output_type -> api.file.v1.RenameFileReply
+	16, // 29: api.file.v1.FileService.CreateFolder:output_type -> api.file.v1.CreateFolderReply
+	18, // 30: api.file.v1.FileService.MoveFile:output_type -> api.file.v1.MoveFileReply
+	20, // 31: api.file.v1.FileService.ListTrash:output_type -> api.file.v1.ListTrashReply
+	23, // 32: api.file.v1.FileService.RestoreFile:output_type -> api.file.v1.RestoreFileReply
+	25, // 33: api.file.v1.FileService.PermanentDelete:output_type -> api.file.v1.PermanentDeleteReply
+	27, // 34: api.file.v1.FileService.CreateShare:output_type -> api.file.v1.CreateShareReply
+	29, // 35: api.file.v1.FileService.GetShare:output_type -> api.file.v1.GetShareReply
+	31, // 36: api.file.v1.FileService.SearchFiles:output_type -> api.file.v1.SearchFilesReply
+	33, // 37: api.file.v1.FileService.GetDiskUsage:output_type -> api.file.v1.GetDiskUsageReply
+	22, // [22:38] is the sub-list for method output_type
+	6,  // [6:22] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -2155,7 +2280,7 @@ func file_file_v1_file_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_file_v1_file_proto_rawDesc), len(file_file_v1_file_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   32,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

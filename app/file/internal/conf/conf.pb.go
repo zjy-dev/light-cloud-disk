@@ -27,6 +27,7 @@ type Bootstrap struct {
 	Server        *Server                `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
 	Data          *Data                  `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	Upload        *Upload                `protobuf:"bytes,3,opt,name=upload,proto3" json:"upload,omitempty"`
+	Storage       *Storage               `protobuf:"bytes,4,opt,name=storage,proto3" json:"storage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -78,6 +79,13 @@ func (x *Bootstrap) GetData() *Data {
 func (x *Bootstrap) GetUpload() *Upload {
 	if x != nil {
 		return x.Upload
+	}
+	return nil
+}
+
+func (x *Bootstrap) GetStorage() *Storage {
+	if x != nil {
+		return x.Storage
 	}
 	return nil
 }
@@ -246,6 +254,67 @@ func (x *Upload) GetStoreDir() string {
 	return ""
 }
 
+type Storage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// local disk max bytes for chunk temp + merge temp
+	LocalMaxBytes int64              `protobuf:"varint,1,opt,name=local_max_bytes,json=localMaxBytes,proto3" json:"local_max_bytes,omitempty"`
+	Seaweedfs     *Storage_SeaweedFS `protobuf:"bytes,2,opt,name=seaweedfs,proto3" json:"seaweedfs,omitempty"`
+	Oss           *Storage_OSS       `protobuf:"bytes,3,opt,name=oss,proto3" json:"oss,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Storage) Reset() {
+	*x = Storage{}
+	mi := &file_conf_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Storage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Storage) ProtoMessage() {}
+
+func (x *Storage) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Storage.ProtoReflect.Descriptor instead.
+func (*Storage) Descriptor() ([]byte, []int) {
+	return file_conf_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Storage) GetLocalMaxBytes() int64 {
+	if x != nil {
+		return x.LocalMaxBytes
+	}
+	return 0
+}
+
+func (x *Storage) GetSeaweedfs() *Storage_SeaweedFS {
+	if x != nil {
+		return x.Seaweedfs
+	}
+	return nil
+}
+
+func (x *Storage) GetOss() *Storage_OSS {
+	if x != nil {
+		return x.Oss
+	}
+	return nil
+}
+
 type Server_GRPC struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Network       string                 `protobuf:"bytes,1,opt,name=network,proto3" json:"network,omitempty"`
@@ -257,7 +326,7 @@ type Server_GRPC struct {
 
 func (x *Server_GRPC) Reset() {
 	*x = Server_GRPC{}
-	mi := &file_conf_proto_msgTypes[4]
+	mi := &file_conf_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -269,7 +338,7 @@ func (x *Server_GRPC) String() string {
 func (*Server_GRPC) ProtoMessage() {}
 
 func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[4]
+	mi := &file_conf_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -318,7 +387,7 @@ type Data_Database struct {
 
 func (x *Data_Database) Reset() {
 	*x = Data_Database{}
-	mi := &file_conf_proto_msgTypes[5]
+	mi := &file_conf_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -330,7 +399,7 @@ func (x *Data_Database) String() string {
 func (*Data_Database) ProtoMessage() {}
 
 func (x *Data_Database) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[5]
+	mi := &file_conf_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,7 +453,7 @@ type Data_Redis struct {
 
 func (x *Data_Redis) Reset() {
 	*x = Data_Redis{}
-	mi := &file_conf_proto_msgTypes[6]
+	mi := &file_conf_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -396,7 +465,7 @@ func (x *Data_Redis) String() string {
 func (*Data_Redis) ProtoMessage() {}
 
 func (x *Data_Redis) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[6]
+	mi := &file_conf_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -427,17 +496,18 @@ func (x *Data_Redis) GetWriteTimeout() *durationpb.Duration {
 }
 
 type Data_Kafka struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Brokers        []string               `protobuf:"bytes,1,rep,name=brokers,proto3" json:"brokers,omitempty"`
-	TransferTopic  string                 `protobuf:"bytes,2,opt,name=transfer_topic,json=transferTopic,proto3" json:"transfer_topic,omitempty"`
-	ThumbnailTopic string                 `protobuf:"bytes,3,opt,name=thumbnail_topic,json=thumbnailTopic,proto3" json:"thumbnail_topic,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Brokers           []string               `protobuf:"bytes,1,rep,name=brokers,proto3" json:"brokers,omitempty"`
+	TransferTopic     string                 `protobuf:"bytes,2,opt,name=transfer_topic,json=transferTopic,proto3" json:"transfer_topic,omitempty"`
+	ThumbnailTopic    string                 `protobuf:"bytes,3,opt,name=thumbnail_topic,json=thumbnailTopic,proto3" json:"thumbnail_topic,omitempty"`
+	CloudMigrateTopic string                 `protobuf:"bytes,4,opt,name=cloud_migrate_topic,json=cloudMigrateTopic,proto3" json:"cloud_migrate_topic,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Data_Kafka) Reset() {
 	*x = Data_Kafka{}
-	mi := &file_conf_proto_msgTypes[7]
+	mi := &file_conf_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -449,7 +519,7 @@ func (x *Data_Kafka) String() string {
 func (*Data_Kafka) ProtoMessage() {}
 
 func (x *Data_Kafka) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[7]
+	mi := &file_conf_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -486,23 +556,199 @@ func (x *Data_Kafka) GetThumbnailTopic() string {
 	return ""
 }
 
+func (x *Data_Kafka) GetCloudMigrateTopic() string {
+	if x != nil {
+		return x.CloudMigrateTopic
+	}
+	return ""
+}
+
+type Storage_SeaweedFS struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Endpoint         string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"` // S3 API endpoint, e.g. http://seaweedfs:8333
+	Region           string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`     // usually "us-east-1"
+	Bucket           string                 `protobuf:"bytes,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	AccessKey        string                 `protobuf:"bytes,4,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`                       // read from env SEAWEEDFS_ACCESS_KEY
+	SecretKey        string                 `protobuf:"bytes,5,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`                       // read from env SEAWEEDFS_SECRET_KEY
+	MaxBytes         int64                  `protobuf:"varint,6,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`                         // SeaweedFS total capacity
+	ThresholdPercent int32                  `protobuf:"varint,7,opt,name=threshold_percent,json=thresholdPercent,proto3" json:"threshold_percent,omitempty"` // trigger eviction at this %
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *Storage_SeaweedFS) Reset() {
+	*x = Storage_SeaweedFS{}
+	mi := &file_conf_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Storage_SeaweedFS) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Storage_SeaweedFS) ProtoMessage() {}
+
+func (x *Storage_SeaweedFS) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Storage_SeaweedFS.ProtoReflect.Descriptor instead.
+func (*Storage_SeaweedFS) Descriptor() ([]byte, []int) {
+	return file_conf_proto_rawDescGZIP(), []int{4, 0}
+}
+
+func (x *Storage_SeaweedFS) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *Storage_SeaweedFS) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *Storage_SeaweedFS) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *Storage_SeaweedFS) GetAccessKey() string {
+	if x != nil {
+		return x.AccessKey
+	}
+	return ""
+}
+
+func (x *Storage_SeaweedFS) GetSecretKey() string {
+	if x != nil {
+		return x.SecretKey
+	}
+	return ""
+}
+
+func (x *Storage_SeaweedFS) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+func (x *Storage_SeaweedFS) GetThresholdPercent() int32 {
+	if x != nil {
+		return x.ThresholdPercent
+	}
+	return 0
+}
+
+type Storage_OSS struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Endpoint        string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Bucket          string                 `protobuf:"bytes,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	AccessKeyId     string                 `protobuf:"bytes,3,opt,name=access_key_id,json=accessKeyId,proto3" json:"access_key_id,omitempty"`             // from env OSS_ACCESS_KEY_ID
+	AccessKeySecret string                 `protobuf:"bytes,4,opt,name=access_key_secret,json=accessKeySecret,proto3" json:"access_key_secret,omitempty"` // from env OSS_ACCESS_KEY_SECRET
+	Region          string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Storage_OSS) Reset() {
+	*x = Storage_OSS{}
+	mi := &file_conf_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Storage_OSS) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Storage_OSS) ProtoMessage() {}
+
+func (x *Storage_OSS) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Storage_OSS.ProtoReflect.Descriptor instead.
+func (*Storage_OSS) Descriptor() ([]byte, []int) {
+	return file_conf_proto_rawDescGZIP(), []int{4, 1}
+}
+
+func (x *Storage_OSS) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *Storage_OSS) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *Storage_OSS) GetAccessKeyId() string {
+	if x != nil {
+		return x.AccessKeyId
+	}
+	return ""
+}
+
+func (x *Storage_OSS) GetAccessKeySecret() string {
+	if x != nil {
+		return x.AccessKeySecret
+	}
+	return ""
+}
+
+func (x *Storage_OSS) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
 var File_conf_proto protoreflect.FileDescriptor
 
 const file_conf_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
 	"conf.proto\x12\n" +
-	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\x89\x01\n" +
+	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\xb8\x01\n" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
 	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x12*\n" +
-	"\x06upload\x18\x03 \x01(\v2\x12.kratos.api.UploadR\x06upload\"\xa0\x01\n" +
+	"\x06upload\x18\x03 \x01(\v2\x12.kratos.api.UploadR\x06upload\x12-\n" +
+	"\astorage\x18\x04 \x01(\v2\x13.kratos.api.StorageR\astorage\"\xa0\x01\n" +
 	"\x06Server\x12+\n" +
 	"\x04grpc\x18\x01 \x01(\v2\x17.kratos.api.Server.GRPCR\x04grpc\x1ai\n" +
 	"\x04GRPC\x12\x18\n" +
 	"\anetwork\x18\x01 \x01(\tR\anetwork\x12\x12\n" +
 	"\x04addr\x18\x02 \x01(\tR\x04addr\x123\n" +
-	"\atimeout\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"\xcc\x04\n" +
+	"\atimeout\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"\xfd\x04\n" +
 	"\x04Data\x125\n" +
 	"\bdatabase\x18\x01 \x01(\v2\x19.kratos.api.Data.DatabaseR\bdatabase\x12,\n" +
 	"\x05redis\x18\x02 \x01(\v2\x16.kratos.api.Data.RedisR\x05redis\x12,\n" +
@@ -514,16 +760,37 @@ const file_conf_proto_rawDesc = "" +
 	"\x11conn_max_lifetime\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x0fconnMaxLifetime\x1a\x85\x01\n" +
 	"\x05Redis\x12<\n" +
 	"\fread_timeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\vreadTimeout\x12>\n" +
-	"\rwrite_timeout\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\fwriteTimeout\x1aq\n" +
+	"\rwrite_timeout\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\fwriteTimeout\x1a\xa1\x01\n" +
 	"\x05Kafka\x12\x18\n" +
 	"\abrokers\x18\x01 \x03(\tR\abrokers\x12%\n" +
 	"\x0etransfer_topic\x18\x02 \x01(\tR\rtransferTopic\x12'\n" +
-	"\x0fthumbnail_topic\x18\x03 \x01(\tR\x0ethumbnailTopic\"_\n" +
+	"\x0fthumbnail_topic\x18\x03 \x01(\tR\x0ethumbnailTopic\x12.\n" +
+	"\x13cloud_migrate_topic\x18\x04 \x01(\tR\x11cloudMigrateTopic\"_\n" +
 	"\x06Upload\x12\x1d\n" +
 	"\n" +
 	"chunk_size\x18\x01 \x01(\x03R\tchunkSize\x12\x19\n" +
 	"\btemp_dir\x18\x02 \x01(\tR\atempDir\x12\x1b\n" +
-	"\tstore_dir\x18\x03 \x01(\tR\bstoreDirBCZAgithub.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf;confb\x06proto3"
+	"\tstore_dir\x18\x03 \x01(\tR\bstoreDir\"\x9f\x04\n" +
+	"\aStorage\x12&\n" +
+	"\x0flocal_max_bytes\x18\x01 \x01(\x03R\rlocalMaxBytes\x12;\n" +
+	"\tseaweedfs\x18\x02 \x01(\v2\x1d.kratos.api.Storage.SeaweedFSR\tseaweedfs\x12)\n" +
+	"\x03oss\x18\x03 \x01(\v2\x17.kratos.api.Storage.OSSR\x03oss\x1a\xdf\x01\n" +
+	"\tSeaweedFS\x12\x1a\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x16\n" +
+	"\x06region\x18\x02 \x01(\tR\x06region\x12\x16\n" +
+	"\x06bucket\x18\x03 \x01(\tR\x06bucket\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\x04 \x01(\tR\taccessKey\x12\x1d\n" +
+	"\n" +
+	"secret_key\x18\x05 \x01(\tR\tsecretKey\x12\x1b\n" +
+	"\tmax_bytes\x18\x06 \x01(\x03R\bmaxBytes\x12+\n" +
+	"\x11threshold_percent\x18\a \x01(\x05R\x10thresholdPercent\x1a\xa1\x01\n" +
+	"\x03OSS\x12\x1a\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x16\n" +
+	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12\"\n" +
+	"\raccess_key_id\x18\x03 \x01(\tR\vaccessKeyId\x12*\n" +
+	"\x11access_key_secret\x18\x04 \x01(\tR\x0faccessKeySecret\x12\x16\n" +
+	"\x06region\x18\x05 \x01(\tR\x06regionBCZAgithub.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf;confb\x06proto3"
 
 var (
 	file_conf_proto_rawDescOnce sync.Once
@@ -537,35 +804,41 @@ func file_conf_proto_rawDescGZIP() []byte {
 	return file_conf_proto_rawDescData
 }
 
-var file_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_conf_proto_goTypes = []any{
 	(*Bootstrap)(nil),           // 0: kratos.api.Bootstrap
 	(*Server)(nil),              // 1: kratos.api.Server
 	(*Data)(nil),                // 2: kratos.api.Data
 	(*Upload)(nil),              // 3: kratos.api.Upload
-	(*Server_GRPC)(nil),         // 4: kratos.api.Server.GRPC
-	(*Data_Database)(nil),       // 5: kratos.api.Data.Database
-	(*Data_Redis)(nil),          // 6: kratos.api.Data.Redis
-	(*Data_Kafka)(nil),          // 7: kratos.api.Data.Kafka
-	(*durationpb.Duration)(nil), // 8: google.protobuf.Duration
+	(*Storage)(nil),             // 4: kratos.api.Storage
+	(*Server_GRPC)(nil),         // 5: kratos.api.Server.GRPC
+	(*Data_Database)(nil),       // 6: kratos.api.Data.Database
+	(*Data_Redis)(nil),          // 7: kratos.api.Data.Redis
+	(*Data_Kafka)(nil),          // 8: kratos.api.Data.Kafka
+	(*Storage_SeaweedFS)(nil),   // 9: kratos.api.Storage.SeaweedFS
+	(*Storage_OSS)(nil),         // 10: kratos.api.Storage.OSS
+	(*durationpb.Duration)(nil), // 11: google.protobuf.Duration
 }
 var file_conf_proto_depIdxs = []int32{
 	1,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
 	2,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
 	3,  // 2: kratos.api.Bootstrap.upload:type_name -> kratos.api.Upload
-	4,  // 3: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
-	5,  // 4: kratos.api.Data.database:type_name -> kratos.api.Data.Database
-	6,  // 5: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
-	7,  // 6: kratos.api.Data.kafka:type_name -> kratos.api.Data.Kafka
-	8,  // 7: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
-	8,  // 8: kratos.api.Data.Database.conn_max_lifetime:type_name -> google.protobuf.Duration
-	8,  // 9: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
-	8,  // 10: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	4,  // 3: kratos.api.Bootstrap.storage:type_name -> kratos.api.Storage
+	5,  // 4: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
+	6,  // 5: kratos.api.Data.database:type_name -> kratos.api.Data.Database
+	7,  // 6: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
+	8,  // 7: kratos.api.Data.kafka:type_name -> kratos.api.Data.Kafka
+	9,  // 8: kratos.api.Storage.seaweedfs:type_name -> kratos.api.Storage.SeaweedFS
+	10, // 9: kratos.api.Storage.oss:type_name -> kratos.api.Storage.OSS
+	11, // 10: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
+	11, // 11: kratos.api.Data.Database.conn_max_lifetime:type_name -> google.protobuf.Duration
+	11, // 12: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
+	11, // 13: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_conf_proto_init() }
@@ -579,7 +852,7 @@ func file_conf_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_conf_proto_rawDesc), len(file_conf_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

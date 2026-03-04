@@ -3,6 +3,7 @@ package biz
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -11,7 +12,10 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockFileRepo is a testify mock for FileRepo.
+// ---------------------------------------------------------------------------
+// MockFileRepo
+// ---------------------------------------------------------------------------
+
 type MockFileRepo struct {
 	mock.Mock
 }
@@ -23,7 +27,6 @@ func (m *MockFileRepo) Create(ctx context.Context, file *File) (*File, error) {
 	}
 	return args.Get(0).(*File), args.Error(1)
 }
-
 func (m *MockFileRepo) FindByID(ctx context.Context, id int64) (*File, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
@@ -31,7 +34,6 @@ func (m *MockFileRepo) FindByID(ctx context.Context, id int64) (*File, error) {
 	}
 	return args.Get(0).(*File), args.Error(1)
 }
-
 func (m *MockFileRepo) FindByUserAndParent(ctx context.Context, userID, parentID int64, page, pageSize int32) ([]*File, int64, error) {
 	args := m.Called(ctx, userID, parentID, page, pageSize)
 	if args.Get(0) == nil {
@@ -39,27 +41,18 @@ func (m *MockFileRepo) FindByUserAndParent(ctx context.Context, userID, parentID
 	}
 	return args.Get(0).([]*File), args.Get(1).(int64), args.Error(2)
 }
-
 func (m *MockFileRepo) Update(ctx context.Context, file *File) error {
-	args := m.Called(ctx, file)
-	return args.Error(0)
+	return m.Called(ctx, file).Error(0)
 }
-
 func (m *MockFileRepo) SoftDelete(ctx context.Context, userID int64, ids []int64) error {
-	args := m.Called(ctx, userID, ids)
-	return args.Error(0)
+	return m.Called(ctx, userID, ids).Error(0)
 }
-
 func (m *MockFileRepo) Restore(ctx context.Context, userID int64, ids []int64) error {
-	args := m.Called(ctx, userID, ids)
-	return args.Error(0)
+	return m.Called(ctx, userID, ids).Error(0)
 }
-
 func (m *MockFileRepo) PermanentDelete(ctx context.Context, userID int64, ids []int64) error {
-	args := m.Called(ctx, userID, ids)
-	return args.Error(0)
+	return m.Called(ctx, userID, ids).Error(0)
 }
-
 func (m *MockFileRepo) FindTrash(ctx context.Context, userID int64, page, pageSize int32) ([]*File, int64, error) {
 	args := m.Called(ctx, userID, page, pageSize)
 	if args.Get(0) == nil {
@@ -67,7 +60,6 @@ func (m *MockFileRepo) FindTrash(ctx context.Context, userID int64, page, pageSi
 	}
 	return args.Get(0).([]*File), args.Get(1).(int64), args.Error(2)
 }
-
 func (m *MockFileRepo) Search(ctx context.Context, userID int64, keyword string, page, pageSize int32) ([]*File, int64, error) {
 	args := m.Called(ctx, userID, keyword, page, pageSize)
 	if args.Get(0) == nil {
@@ -75,7 +67,6 @@ func (m *MockFileRepo) Search(ctx context.Context, userID int64, keyword string,
 	}
 	return args.Get(0).([]*File), args.Get(1).(int64), args.Error(2)
 }
-
 func (m *MockFileRepo) FindStoreByMD5(ctx context.Context, md5 string) (*FileStore, error) {
 	args := m.Called(ctx, md5)
 	if args.Get(0) == nil {
@@ -83,27 +74,35 @@ func (m *MockFileRepo) FindStoreByMD5(ctx context.Context, md5 string) (*FileSto
 	}
 	return args.Get(0).(*FileStore), args.Error(1)
 }
-
 func (m *MockFileRepo) CreateStore(ctx context.Context, store *FileStore) error {
-	args := m.Called(ctx, store)
-	return args.Error(0)
+	return m.Called(ctx, store).Error(0)
 }
-
 func (m *MockFileRepo) IncrStoreRefCount(ctx context.Context, md5 string) error {
-	args := m.Called(ctx, md5)
-	return args.Error(0)
+	return m.Called(ctx, md5).Error(0)
 }
-
 func (m *MockFileRepo) DecrStoreRefCount(ctx context.Context, md5 string) error {
-	args := m.Called(ctx, md5)
-	return args.Error(0)
+	return m.Called(ctx, md5).Error(0)
 }
-
+func (m *MockFileRepo) UpdateStorageLocation(ctx context.Context, fileMD5 string, storageType string, newPath string) error {
+	return m.Called(ctx, fileMD5, storageType, newPath).Error(0)
+}
+func (m *MockFileRepo) UpdateLastAccessed(ctx context.Context, fileMD5 string) error {
+	return m.Called(ctx, fileMD5).Error(0)
+}
+func (m *MockFileRepo) FindLRUStores(ctx context.Context, storageType string, limit int) ([]*FileStore, error) {
+	args := m.Called(ctx, storageType, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*FileStore), args.Error(1)
+}
+func (m *MockFileRepo) SumSizeByStorageType(ctx context.Context, storageType string) (int64, error) {
+	args := m.Called(ctx, storageType)
+	return args.Get(0).(int64), args.Error(1)
+}
 func (m *MockFileRepo) CreateShare(ctx context.Context, share *Share) error {
-	args := m.Called(ctx, share)
-	return args.Error(0)
+	return m.Called(ctx, share).Error(0)
 }
-
 func (m *MockFileRepo) FindShareByID(ctx context.Context, id string) (*Share, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
@@ -111,12 +110,9 @@ func (m *MockFileRepo) FindShareByID(ctx context.Context, id string) (*Share, er
 	}
 	return args.Get(0).(*Share), args.Error(1)
 }
-
 func (m *MockFileRepo) DeleteExpiredShares(ctx context.Context) error {
-	args := m.Called(ctx)
-	return args.Error(0)
+	return m.Called(ctx).Error(0)
 }
-
 func (m *MockFileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int32, error) {
 	args := m.Called(ctx, fileMD5)
 	if args.Get(0) == nil {
@@ -124,74 +120,160 @@ func (m *MockFileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([
 	}
 	return args.Get(0).([]int32), args.Error(1)
 }
-
 func (m *MockFileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error {
-	args := m.Called(ctx, fileMD5, chunkIndex, data)
-	return args.Error(0)
+	return m.Called(ctx, fileMD5, chunkIndex, data).Error(0)
 }
-
 func (m *MockFileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error) {
 	args := m.Called(ctx, fileMD5, fileName, totalChunks)
-	if args.Get(0) == nil {
-		return "", args.Error(1)
-	}
 	return args.String(0), args.Error(1)
 }
-
 func (m *MockFileRepo) SaveChunkInfo(ctx context.Context, chunk *ChunkInfo) error {
-	args := m.Called(ctx, chunk)
-	return args.Error(0)
+	return m.Called(ctx, chunk).Error(0)
 }
-
 func (m *MockFileRepo) ClearChunkInfo(ctx context.Context, fileMD5 string) error {
-	args := m.Called(ctx, fileMD5)
-	return args.Error(0)
+	return m.Called(ctx, fileMD5).Error(0)
+}
+func (m *MockFileRepo) GetDiskUsage(ctx context.Context, diskType string) (int64, error) {
+	args := m.Called(ctx, diskType)
+	return args.Get(0).(int64), args.Error(1)
+}
+func (m *MockFileRepo) IncrDiskUsage(ctx context.Context, diskType string, delta int64) error {
+	return m.Called(ctx, diskType, delta).Error(0)
 }
 
-// MockUserClient is a testify mock for UserClient.
+// ---------------------------------------------------------------------------
+// MockUserClient
+// ---------------------------------------------------------------------------
+
 type MockUserClient struct {
 	mock.Mock
 }
 
 func (m *MockUserClient) UpdateStorageUsed(ctx context.Context, userID int64, delta int64) error {
-	args := m.Called(ctx, userID, delta)
-	return args.Error(0)
+	return m.Called(ctx, userID, delta).Error(0)
 }
 
-// MockMessageProducer is a testify mock for MessageProducer.
+// ---------------------------------------------------------------------------
+// MockMessageProducer
+// ---------------------------------------------------------------------------
+
 type MockMessageProducer struct {
 	mock.Mock
 }
 
-func (m *MockMessageProducer) SendTransferMessage(ctx context.Context, msg *TransferMessage) error {
-	args := m.Called(ctx, msg)
-	return args.Error(0)
+func (m *MockMessageProducer) SendCloudMigrateMessage(ctx context.Context, msg *CloudMigrateMessage) error {
+	return m.Called(ctx, msg).Error(0)
 }
-
 func (m *MockMessageProducer) SendThumbnailMessage(ctx context.Context, msg *ThumbnailMessage) error {
-	args := m.Called(ctx, msg)
-	return args.Error(0)
+	return m.Called(ctx, msg).Error(0)
+}
+func (m *MockMessageProducer) Close() error {
+	return m.Called().Error(0)
 }
 
-func (m *MockMessageProducer) Close() error {
-	args := m.Called()
-	return args.Error(0)
+// ---------------------------------------------------------------------------
+// MockObjectStorage (SeaweedFS)
+// ---------------------------------------------------------------------------
+
+type MockObjectStorage struct {
+	mock.Mock
+}
+
+func (m *MockObjectStorage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+	return m.Called(ctx, key, reader, size).Error(0)
+}
+func (m *MockObjectStorage) Delete(ctx context.Context, key string) error {
+	return m.Called(ctx, key).Error(0)
+}
+func (m *MockObjectStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	args := m.Called(ctx, key)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(io.ReadCloser), args.Error(1)
+}
+func (m *MockObjectStorage) PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error) {
+	args := m.Called(ctx, key, expires)
+	return args.String(0), args.Error(1)
+}
+
+// ---------------------------------------------------------------------------
+// MockCloudStorage (OSS)
+// ---------------------------------------------------------------------------
+
+type MockCloudStorage struct {
+	mock.Mock
+}
+
+func (m *MockCloudStorage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+	return m.Called(ctx, key, reader, size).Error(0)
+}
+func (m *MockCloudStorage) Delete(ctx context.Context, key string) error {
+	return m.Called(ctx, key).Error(0)
+}
+func (m *MockCloudStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	args := m.Called(ctx, key)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(io.ReadCloser), args.Error(1)
+}
+func (m *MockCloudStorage) PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error) {
+	args := m.Called(ctx, key, expires)
+	return args.String(0), args.Error(1)
+}
+
+// ---------------------------------------------------------------------------
+// Test helper constructors
+// ---------------------------------------------------------------------------
+
+var defaultStorageCfg = &StorageConfig{
+	LocalMaxBytes:         10 * 1024 * 1024 * 1024, // 10 GB
+	SeaweedFSMaxBytes:     50 * 1024 * 1024 * 1024, // 50 GB
+	SeaweedFSThresholdPct: 80,
 }
 
 func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUsecase {
 	mq := new(MockMessageProducer)
-	// By default, allow any MQ calls in tests that don't care about MQ
-	mq.On("SendTransferMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
 	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
 	mq.On("Close").Return(nil).Maybe()
-	return NewFileUsecase(repo, userClient, mq, log.DefaultLogger)
+
+	objStore := new(MockObjectStorage)
+	objStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	objStore.On("PresignGetURL", mock.Anything, mock.Anything, mock.Anything).Return("http://swf/presigned", nil).Maybe()
+
+	cloudStore := new(MockCloudStorage)
+	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	cloudStore.On("PresignGetURL", mock.Anything, mock.Anything, mock.Anything).Return("http://oss/presigned", nil).Maybe()
+
+	return NewFileUsecase(repo, userClient, mq, objStore, cloudStore, defaultStorageCfg, log.DefaultLogger)
 }
 
-func newTestFileUsecaseWithMQ(repo *MockFileRepo, userClient *MockUserClient, mq *MockMessageProducer) *FileUsecase {
-	return NewFileUsecase(repo, userClient, mq, log.DefaultLogger)
+type testDeps struct {
+	repo       *MockFileRepo
+	userClient *MockUserClient
+	mq         *MockMessageProducer
+	objStore   *MockObjectStorage
+	cloudStore *MockCloudStorage
+	uc         *FileUsecase
 }
 
-// --- CheckUpload tests ---
+func newTestDeps() *testDeps {
+	d := &testDeps{
+		repo:       new(MockFileRepo),
+		userClient: new(MockUserClient),
+		mq:         new(MockMessageProducer),
+		objStore:   new(MockObjectStorage),
+		cloudStore: new(MockCloudStorage),
+	}
+	d.uc = NewFileUsecase(d.repo, d.userClient, d.mq, d.objStore, d.cloudStore, defaultStorageCfg, log.DefaultLogger)
+	return d
+}
+
+// ---------------------------------------------------------------------------
+// CheckUpload tests
+// ---------------------------------------------------------------------------
 
 func TestCheckUpload_FastUpload(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -199,16 +281,15 @@ func TestCheckUpload_FastUpload(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
-		FileMD5:   "abc123",
-		Size:      1024,
-		StorePath: "/store/abc123",
+		FileMD5: "abc123", Size: 1024, StorePath: "abc123.bin", StorageType: StorageSeaweedFS,
 	}, nil)
 
-	canFast, chunks, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.True(t, canFast)
 	assert.Nil(t, chunks)
+	assert.False(t, diskFull)
 	repo.AssertExpectations(t)
 }
 
@@ -218,13 +299,15 @@ func TestCheckUpload_ResumeUpload(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32{0, 1, 3}, nil)
 
-	canFast, chunks, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Equal(t, []int32{0, 1, 3}, chunks)
+	assert.False(t, diskFull)
 	repo.AssertExpectations(t)
 }
 
@@ -234,65 +317,72 @@ func TestCheckUpload_NewUpload(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32(nil), nil)
 
-	canFast, chunks, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Nil(t, chunks)
+	assert.False(t, diskFull)
 	repo.AssertExpectations(t)
 }
 
-// --- SaveChunk tests ---
+func TestCheckUpload_DiskFull(t *testing.T) {
+	repo := new(MockFileRepo)
+	uc := newTestFileUsecase(repo, new(MockUserClient))
+	ctx := context.Background()
+
+	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	// Return usage close to limit
+	repo.On("GetDiskUsage", ctx, "local").Return(defaultStorageCfg.LocalMaxBytes-100, nil)
+
+	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5) // 1024 > 100 remaining
+
+	assert.NoError(t, err)
+	assert.False(t, canFast)
+	assert.Nil(t, chunks)
+	assert.True(t, diskFull)
+	repo.AssertExpectations(t)
+}
+
+// ---------------------------------------------------------------------------
+// SaveChunk tests
+// ---------------------------------------------------------------------------
 
 func TestSaveChunk_Success(t *testing.T) {
 	repo := new(MockFileRepo)
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
+	data := []byte("chunk-data")
+	repo.On("SaveChunkData", ctx, "abc123", int32(2), data).Return(nil)
+	repo.On("IncrDiskUsage", ctx, "local", int64(len(data))).Return(nil)
 	repo.On("SaveChunkInfo", ctx, mock.MatchedBy(func(c *ChunkInfo) bool {
-		return c.FileMD5 == "abc123" && c.ChunkIndex == 2 && c.ChunkSize == int64(len([]byte("chunk-data"))) && c.Uploaded
+		return c.FileMD5 == "abc123" && c.ChunkIndex == 2 && c.ChunkSize == int64(len(data)) && c.Uploaded
 	})).Return(nil)
-	repo.On("SaveChunkData", ctx, "abc123", int32(2), []byte("chunk-data")).Return(nil)
 
-	err := uc.SaveChunk(ctx, "abc123", 2, int64(len([]byte("chunk-data"))), []byte("chunk-data"))
+	err := uc.SaveChunk(ctx, "abc123", 2, int64(len(data)), data)
 
 	assert.NoError(t, err)
 	repo.AssertExpectations(t)
 }
 
-// --- MergeChunks tests ---
-
-func TestMergeChunks_NewStore(t *testing.T) {
+func TestSaveChunk_SizeMismatch(t *testing.T) {
 	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	uc := newTestFileUsecase(repo, userClient)
+	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
-	repo.On("CreateStore", ctx, mock.MatchedBy(func(s *FileStore) bool {
-		return s.FileMD5 == "abc123" && s.Size == 2048 && s.StorePath == "/tmp/store/abc123.zip"
-	})).Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
-		ID:      1,
-		UserID:  100,
-		Name:    "file.zip",
-		FileMD5: "abc123",
-		Size:    2048,
-	}, nil)
-	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
+	err := uc.SaveChunk(ctx, "abc123", 0, 999, []byte("short"))
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
-
-	assert.NoError(t, err)
-	assert.Equal(t, int64(1), file.ID)
-	assert.Equal(t, "file.zip", file.Name)
-	repo.AssertExpectations(t)
-	userClient.AssertExpectations(t)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "chunk size mismatch")
 }
+
+// ---------------------------------------------------------------------------
+// MergeChunks tests — dedup (existing store)
+// ---------------------------------------------------------------------------
 
 func TestMergeChunks_ExistingStore(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -301,17 +391,11 @@ func TestMergeChunks_ExistingStore(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
-		FileMD5:   "abc123",
-		StorePath: "/tmp/store/abc123.zip",
-		RefCount:  1,
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageSeaweedFS, RefCount: 1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
-		ID:      2,
-		UserID:  100,
-		Name:    "file.zip",
-		FileMD5: "abc123",
-		Size:    2048,
+		ID: 2, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
 	}, nil)
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
@@ -330,25 +414,26 @@ func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
 	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
-	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
-	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
+	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageSeaweedFS, RefCount: 1,
+	}, nil)
+	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
 		ID: 3, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
 	}, nil)
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(errors.New("user-service unavailable"))
 
-	// Should still succeed - storage update failure is non-fatal
 	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, file)
 	repo.AssertExpectations(t)
-	userClient.AssertExpectations(t)
 }
 
-// --- ListFiles tests ---
+// ---------------------------------------------------------------------------
+// ListFiles
+// ---------------------------------------------------------------------------
 
 func TestListFiles_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -369,7 +454,9 @@ func TestListFiles_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- CreateFolder tests ---
+// ---------------------------------------------------------------------------
+// CreateFolder
+// ---------------------------------------------------------------------------
 
 func TestCreateFolder_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -390,7 +477,9 @@ func TestCreateFolder_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- RenameFile tests ---
+// ---------------------------------------------------------------------------
+// RenameFile
+// ---------------------------------------------------------------------------
 
 func TestRenameFile_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -417,7 +506,7 @@ func TestRenameFile_WrongUser(t *testing.T) {
 	existing := &File{ID: 1, UserID: 100, Name: "old.txt"}
 	repo.On("FindByID", ctx, int64(1)).Return(existing, nil)
 
-	err := uc.RenameFile(ctx, 999, 1, "new.txt") // wrong user
+	err := uc.RenameFile(ctx, 999, 1, "new.txt")
 
 	assert.ErrorIs(t, err, ErrFileNotFound)
 	repo.AssertExpectations(t)
@@ -436,7 +525,9 @@ func TestRenameFile_NotFound(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- DeleteFiles tests ---
+// ---------------------------------------------------------------------------
+// DeleteFiles
+// ---------------------------------------------------------------------------
 
 func TestDeleteFiles_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -454,7 +545,9 @@ func TestDeleteFiles_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- MoveFiles tests ---
+// ---------------------------------------------------------------------------
+// MoveFiles
+// ---------------------------------------------------------------------------
 
 func TestMoveFiles_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -476,7 +569,9 @@ func TestMoveFiles_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- Trash tests ---
+// ---------------------------------------------------------------------------
+// Trash
+// ---------------------------------------------------------------------------
 
 func TestListTrash_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -484,9 +579,7 @@ func TestListTrash_Success(t *testing.T) {
 	ctx := context.Background()
 
 	deletedAt := time.Now()
-	trashFiles := []*File{
-		{ID: 1, Name: "deleted.txt", DeletedAt: &deletedAt},
-	}
+	trashFiles := []*File{{ID: 1, Name: "deleted.txt", DeletedAt: &deletedAt}}
 	repo.On("FindTrash", ctx, int64(1), int32(1), int32(20)).Return(trashFiles, int64(1), nil)
 
 	files, total, err := uc.ListTrash(ctx, 1, 1, 20)
@@ -523,7 +616,86 @@ func TestPermanentDelete_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- Share tests ---
+// ---------------------------------------------------------------------------
+// GetDownloadURL — presigned URL from storage
+// ---------------------------------------------------------------------------
+
+func TestGetDownloadURL_SeaweedFS(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindByID", ctx, int64(1)).Return(&File{
+		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123",
+	}, nil)
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageSeaweedFS,
+	}, nil)
+	d.repo.On("UpdateLastAccessed", ctx, "abc123").Return(nil)
+	d.objStore.On("PresignGetURL", ctx, "abc123.zip", time.Hour).Return("http://swf/presigned/abc123.zip", nil)
+
+	url, name, err := d.uc.GetDownloadURL(ctx, 100, 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "http://swf/presigned/abc123.zip", url)
+	assert.Equal(t, "file.zip", name)
+}
+
+func TestGetDownloadURL_OSS(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindByID", ctx, int64(1)).Return(&File{
+		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123",
+	}, nil)
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageOSS,
+	}, nil)
+	d.repo.On("UpdateLastAccessed", ctx, "abc123").Return(nil)
+	d.cloudStore.On("PresignGetURL", ctx, "abc123.zip", time.Hour).Return("http://oss/presigned/abc123.zip", nil)
+
+	url, name, err := d.uc.GetDownloadURL(ctx, 100, 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "http://oss/presigned/abc123.zip", url)
+	assert.Equal(t, "file.zip", name)
+}
+
+func TestGetDownloadURL_NotFound(t *testing.T) {
+	repo := new(MockFileRepo)
+	uc := newTestFileUsecase(repo, new(MockUserClient))
+	ctx := context.Background()
+
+	repo.On("FindByID", ctx, int64(999)).Return(nil, errors.New("not found"))
+
+	_, _, err := uc.GetDownloadURL(ctx, 100, 999)
+
+	assert.ErrorIs(t, err, ErrFileNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// GetDiskUsage
+// ---------------------------------------------------------------------------
+
+func TestGetDiskUsage(t *testing.T) {
+	repo := new(MockFileRepo)
+	uc := newTestFileUsecase(repo, new(MockUserClient))
+	ctx := context.Background()
+
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(1024), nil)
+	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(2048), nil)
+
+	localUsed, localMax, swfUsed, swfMax, err := uc.GetDiskUsage(ctx)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1024), localUsed)
+	assert.Equal(t, defaultStorageCfg.LocalMaxBytes, localMax)
+	assert.Equal(t, int64(2048), swfUsed)
+	assert.Equal(t, defaultStorageCfg.SeaweedFSMaxBytes, swfMax)
+}
+
+// ---------------------------------------------------------------------------
+// Share
+// ---------------------------------------------------------------------------
 
 func TestCreateShare_WithExpiry(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -635,7 +807,9 @@ func TestGetShare_CorrectPassword(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- SearchFiles tests ---
+// ---------------------------------------------------------------------------
+// SearchFiles
+// ---------------------------------------------------------------------------
 
 func TestSearchFiles_Success(t *testing.T) {
 	repo := new(MockFileRepo)
@@ -656,92 +830,38 @@ func TestSearchFiles_Success(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// --- MQ Integration tests ---
+// ---------------------------------------------------------------------------
+// LRU eviction
+// ---------------------------------------------------------------------------
 
-func TestMergeChunks_SendsTransferMessage(t *testing.T) {
-	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
+func TestMaybeEvictToCloud_TriggersWhenAboveThreshold(t *testing.T) {
+	d := newTestDeps()
 	ctx := context.Background()
 
-	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
-	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
-		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
+	// 50 GB max, 80% threshold = 40 GB threshold. Pass currentUsed = 42 GB (above).
+	d.repo.On("FindLRUStores", ctx, StorageSeaweedFS, 100).Return([]*FileStore{
+		{FileMD5: "file1", StorePath: "file1.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB
+		{FileMD5: "file2", StorePath: "file2.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB
 	}, nil)
-	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
+	d.mq.On("SendCloudMigrateMessage", ctx, mock.AnythingOfType("*biz.CloudMigrateMessage")).Return(nil)
 
-	mq.On("SendTransferMessage", ctx, mock.MatchedBy(func(msg *TransferMessage) bool {
-		return msg.FileMD5 == "abc123" && msg.CurLocation == "/tmp/store/abc123.zip"
-	})).Return(nil)
+	d.uc.maybeEvictToCloud(ctx, 42*1024*1024*1024) // 42 GB > 40 GB threshold
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, file)
-	mq.AssertCalled(t, "SendTransferMessage", ctx, mock.Anything)
-	mq.AssertNotCalled(t, "SendThumbnailMessage", mock.Anything, mock.Anything)
+	d.mq.AssertCalled(t, "SendCloudMigrateMessage", ctx, mock.Anything)
 }
 
-func TestMergeChunks_SendsThumbnailForImage(t *testing.T) {
-	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
+func TestMaybeEvictToCloud_NoOp_BelowThreshold(t *testing.T) {
+	d := newTestDeps()
 	ctx := context.Background()
 
-	repo.On("FindStoreByMD5", ctx, "img123").Return(nil, errors.New("not found"))
-	repo.On("MergeChunkData", ctx, "img123", "photo.jpg", int32(1)).Return("/tmp/store/img123.jpg", nil)
-	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
-		ID: 5, UserID: 100, Name: "photo.jpg", FileMD5: "img123", Size: 4096,
-	}, nil)
-	repo.On("ClearChunkInfo", ctx, "img123").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(4096)).Return(nil)
+	d.uc.maybeEvictToCloud(ctx, 20*1024*1024*1024) // 20 GB < 40 GB threshold
 
-	mq.On("SendTransferMessage", ctx, mock.Anything).Return(nil)
-	mq.On("SendThumbnailMessage", ctx, mock.MatchedBy(func(msg *ThumbnailMessage) bool {
-		return msg.FileID == 5 && msg.FilePath == "/tmp/store/img123.jpg" && msg.FileType == "image/jpeg"
-	})).Return(nil)
-
-	file, err := uc.MergeChunks(ctx, 100, 0, "photo.jpg", "img123", 4096, 1)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, file)
-	mq.AssertCalled(t, "SendTransferMessage", ctx, mock.Anything)
-	mq.AssertCalled(t, "SendThumbnailMessage", ctx, mock.Anything)
+	d.mq.AssertNotCalled(t, "SendCloudMigrateMessage", mock.Anything, mock.Anything)
 }
 
-func TestMergeChunks_MQFailureNonFatal(t *testing.T) {
-	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	uc := newTestFileUsecaseWithMQ(repo, userClient, mq)
-	ctx := context.Background()
-
-	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/store/abc123.zip", nil)
-	repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
-		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
-	}, nil)
-	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
-
-	// MQ fails
-	mq.On("SendTransferMessage", ctx, mock.Anything).Return(errors.New("kafka down"))
-
-	// Should still succeed - MQ failure is non-fatal
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
-
-	assert.NoError(t, err)
-	assert.NotNil(t, file)
-}
-
-// --- Helper function tests ---
+// ---------------------------------------------------------------------------
+// Helper function tests
+// ---------------------------------------------------------------------------
 
 func TestIsMediaFile(t *testing.T) {
 	tests := []struct {

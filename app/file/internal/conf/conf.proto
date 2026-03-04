@@ -9,6 +9,7 @@ message Bootstrap {
   Server server = 1;
   Data data = 2;
   Upload upload = 3;
+  Storage storage = 4;
 }
 
 message Server {
@@ -35,6 +36,7 @@ message Data {
     repeated string brokers = 1;
     string transfer_topic = 2;
     string thumbnail_topic = 3;
+    string cloud_migrate_topic = 4;
   }
   Database database = 1;
   Redis redis = 2;
@@ -45,4 +47,30 @@ message Upload {
   int64 chunk_size = 1;
   string temp_dir = 2;
   string store_dir = 3;
+}
+
+message Storage {
+  // local disk max bytes for chunk temp + merge temp
+  int64 local_max_bytes = 1;
+
+  message SeaweedFS {
+    string endpoint = 1; // S3 API endpoint, e.g. http://seaweedfs:8333
+    string region = 2; // usually "us-east-1"
+    string bucket = 3;
+    string access_key = 4; // read from env SEAWEEDFS_ACCESS_KEY
+    string secret_key = 5; // read from env SEAWEEDFS_SECRET_KEY
+    int64 max_bytes = 6; // SeaweedFS total capacity
+    int32 threshold_percent = 7; // trigger eviction at this %
+  }
+
+  message OSS {
+    string endpoint = 1;
+    string bucket = 2;
+    string access_key_id = 3; // from env OSS_ACCESS_KEY_ID
+    string access_key_secret = 4; // from env OSS_ACCESS_KEY_SECRET
+    string region = 5;
+  }
+
+  SeaweedFS seaweedfs = 2;
+  OSS oss = 3;
 }

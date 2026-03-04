@@ -16,9 +16,9 @@ import (
 
 // kafkaProducer implements biz.MessageProducer using segmentio/kafka-go.
 type kafkaProducer struct {
-	transferWriter  *kafka.Writer
-	thumbnailWriter *kafka.Writer
-	log             *log.Helper
+	cloudMigrateWriter *kafka.Writer
+	thumbnailWriter    *kafka.Writer
+	log                *log.Helper
 }
 
 // NewKafkaProducer creates a Kafka-backed MessageProducer.
@@ -32,18 +32,18 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 		return &noopProducer{}, func() {}, nil
 	}
 
-	transferTopic := "file-transfer"
+	cloudMigrateTopic := "cloud-migrate"
 	thumbnailTopic := "file-thumbnail"
 	if c.Kafka != nil {
-		if c.Kafka.TransferTopic != "" {
-			transferTopic = c.Kafka.TransferTopic
+		if c.Kafka.CloudMigrateTopic != "" {
+			cloudMigrateTopic = c.Kafka.CloudMigrateTopic
 		}
 		if c.Kafka.ThumbnailTopic != "" {
 			thumbnailTopic = c.Kafka.ThumbnailTopic
 		}
 	}
 
-	helper.Infof("kafka producer connecting to %v, topics: %s, %s", brokers, transferTopic, thumbnailTopic)
+	helper.Infof("kafka producer connecting to %v, topics: %s, %s", brokers, cloudMigrateTopic, thumbnailTopic)
 
 	newWriter := func(topic string) *kafka.Writer {
 		return &kafka.Writer{
@@ -56,9 +56,9 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 	}
 
 	p := &kafkaProducer{
-		transferWriter:  newWriter(transferTopic),
-		thumbnailWriter: newWriter(thumbnailTopic),
-		log:             helper,
+		cloudMigrateWriter: newWriter(cloudMigrateTopic),
+		thumbnailWriter:    newWriter(thumbnailTopic),
+		log:                helper,
 	}
 	cleanup := func() {
 		helper.Info("closing kafka producers")
@@ -79,17 +79,17 @@ func resolveBrokers(c *conf.Data) []string {
 	return nil
 }
 
-func (p *kafkaProducer) SendTransferMessage(ctx context.Context, msg *biz.TransferMessage) error {
+func (p *kafkaProducer) SendCloudMigrateMessage(ctx context.Context, msg *biz.CloudMigrateMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	err = p.transferWriter.WriteMessages(ctx, kafka.Message{
+	err = p.cloudMigrateWriter.WriteMessages(ctx, kafka.Message{
 		Key:   []byte(msg.FileMD5),
 		Value: data,
 	})
 	if err != nil {
-		p.log.Errorf("failed to write transfer message: %v", err)
+		p.log.Errorf("failed to write cloud migrate message: %v", err)
 	}
 	return err
 }
@@ -111,7 +111,7 @@ func (p *kafkaProducer) SendThumbnailMessage(ctx context.Context, msg *biz.Thumb
 
 func (p *kafkaProducer) Close() error {
 	var errs []error
-	if err := p.transferWriter.Close(); err != nil {
+	if err := p.cloudMigrateWriter.Close(); err != nil {
 		errs = append(errs, err)
 	}
 	if err := p.thumbnailWriter.Close(); err != nil {
@@ -126,7 +126,7 @@ func (p *kafkaProducer) Close() error {
 // noopProducer is used when Kafka is not configured.
 type noopProducer struct{}
 
-func (p *noopProducer) SendTransferMessage(_ context.Context, _ *biz.TransferMessage) error {
+func (p *noopProducer) SendCloudMigrateMessage(_ context.Context, _ *biz.CloudMigrateMessage) error {
 	return nil
 }
 

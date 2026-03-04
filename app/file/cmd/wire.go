@@ -17,13 +17,14 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/service"
 )
 
-func wireApp(*conf.Server, *conf.Data, log.Logger, *consul.Registry, userv1.UserServiceClient) (*kratos.App, func(), error) {
+func wireApp(*conf.Server, *conf.Data, *conf.Storage, log.Logger, *consul.Registry, userv1.UserServiceClient) (*kratos.App, func(), error) {
 	panic(wire.Build(
 		server.ProviderSet,
 		data.ProviderSet,
 		data.NewUserClient,
 		biz.ProviderSet,
 		service.ProviderSet,
+		provideStorageConfig,
 		newApp,
 	))
 }

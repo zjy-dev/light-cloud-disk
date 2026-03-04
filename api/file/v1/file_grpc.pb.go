@@ -34,6 +34,7 @@ const (
 	FileService_CreateShare_FullMethodName     = "/api.file.v1.FileService/CreateShare"
 	FileService_GetShare_FullMethodName        = "/api.file.v1.FileService/GetShare"
 	FileService_SearchFiles_FullMethodName     = "/api.file.v1.FileService/SearchFiles"
+	FileService_GetDiskUsage_FullMethodName    = "/api.file.v1.FileService/GetDiskUsage"
 )
 
 // FileServiceClient is the client API for FileService service.
@@ -70,6 +71,8 @@ type FileServiceClient interface {
 	GetShare(ctx context.Context, in *GetShareRequest, opts ...grpc.CallOption) (*GetShareReply, error)
 	// 搜索文件
 	SearchFiles(ctx context.Context, in *SearchFilesRequest, opts ...grpc.CallOption) (*SearchFilesReply, error)
+	// 获取磁盘用量
+	GetDiskUsage(ctx context.Context, in *GetDiskUsageRequest, opts ...grpc.CallOption) (*GetDiskUsageReply, error)
 }
 
 type fileServiceClient struct {
@@ -230,6 +233,16 @@ func (c *fileServiceClient) SearchFiles(ctx context.Context, in *SearchFilesRequ
 	return out, nil
 }
 
+func (c *fileServiceClient) GetDiskUsage(ctx context.Context, in *GetDiskUsageRequest, opts ...grpc.CallOption) (*GetDiskUsageReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDiskUsageReply)
+	err := c.cc.Invoke(ctx, FileService_GetDiskUsage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileServiceServer is the server API for FileService service.
 // All implementations must embed UnimplementedFileServiceServer
 // for forward compatibility.
@@ -264,6 +277,8 @@ type FileServiceServer interface {
 	GetShare(context.Context, *GetShareRequest) (*GetShareReply, error)
 	// 搜索文件
 	SearchFiles(context.Context, *SearchFilesRequest) (*SearchFilesReply, error)
+	// 获取磁盘用量
+	GetDiskUsage(context.Context, *GetDiskUsageRequest) (*GetDiskUsageReply, error)
 	mustEmbedUnimplementedFileServiceServer()
 }
 
@@ -318,6 +333,9 @@ func (UnimplementedFileServiceServer) GetShare(context.Context, *GetShareRequest
 }
 func (UnimplementedFileServiceServer) SearchFiles(context.Context, *SearchFilesRequest) (*SearchFilesReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method SearchFiles not implemented")
+}
+func (UnimplementedFileServiceServer) GetDiskUsage(context.Context, *GetDiskUsageRequest) (*GetDiskUsageReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDiskUsage not implemented")
 }
 func (UnimplementedFileServiceServer) mustEmbedUnimplementedFileServiceServer() {}
 func (UnimplementedFileServiceServer) testEmbeddedByValue()                     {}
@@ -610,6 +628,24 @@ func _FileService_SearchFiles_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileService_GetDiskUsage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDiskUsageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).GetDiskUsage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_GetDiskUsage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).GetDiskUsage(ctx, req.(*GetDiskUsageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileService_ServiceDesc is the grpc.ServiceDesc for FileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -676,6 +712,10 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SearchFiles",
 			Handler:    _FileService_SearchFiles_Handler,
+		},
+		{
+			MethodName: "GetDiskUsage",
+			Handler:    _FileService_GetDiskUsage_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

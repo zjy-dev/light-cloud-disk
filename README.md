@@ -3,7 +3,7 @@
 [![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
 [![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
 
-基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
+基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构，三级存储（本地磁盘 → SeaweedFS → 阿里云 OSS）+ LRU 自动冷迁移。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
 
 **Monorepo 结构**: 后端 Go 代码在项目根目录，前端 Vue 3 SPA 在 `frontend/` 目录。
 
@@ -21,19 +21,25 @@
     │   User Service      │           │   File Service      │
     │   (gRPC :9001)      │◄──gRPC────│   (gRPC :9002)      │
     │   Kratos v2         │           │   Kratos v2         │
-    └────────┬────────────┘           └────┬───────┬────────┘
-             │                             │       │
-             ▼                             ▼       ▼
-    ┌─────────────────┐           ┌────────────┐ ┌───────┐
-    │     MySQL       │           │   MySQL    │ │ Redis │
-    └─────────────────┘           └────────────┘ └───────┘
-
-    ← ─ ─ ─  Consul 服务发现  ─ ─ ─ →
+    └────────┬────────────┘           └──┬─────┬─────┬──────┘
+             │                           │     │     │
+             ▼                           ▼     ▼     ▼
+    ┌─────────────────┐           ┌──────┐ ┌─────┐ ┌───────────┐
+    │     MySQL       │           │MySQL │ │Redis│ │ SeaweedFS │
+    └─────────────────┘           └──────┘ └─────┘ └───────────┘
+                                                        │
+    ← ─ ─ ─  Consul 服务发现  ─ ─ ─ →                   │
+                                                        ▼
+    File Service ──→ Kafka ──→ file-worker ──→ ┌──────────┐
+    (cloud-migrate)                            │阿里云 OSS │
+                                               └──────────┘
 ```
 
 - **User Service**: 用户注册/登录、信息管理、存储配额 (gRPC-only, Kratos v2)
-- **File Service**: 分块上传、秒传、文件管理、回收站、分享 (gRPC-only, Kratos v2)
+- **File Service**: 分块上传、秒传、文件管理、回收站、分享、三级存储 (gRPC-only, Kratos v2)
 - **API Gateway**: HTTP 路由、JWT 认证、CORS、gRPC 代理 (Gin)
+- **SeaweedFS**: S3 兼容对象存储，合并后文件主存 (温数据)
+- **阿里云 OSS**: 冷数据归档，由 file-worker 异步迁移
 - **Consul**: 服务注册与发现
 
 ## 技术栈
@@ -47,7 +53,9 @@
 | 通信协议 | gRPC (服务间) + HTTP (客户端) | - |
 | ORM | GORM | v1.25.12 |
 | 缓存 | Redis | v8.11.5 |
-| 消息队列 | Kafka (预留) | v3.6 |
+| 消息队列 | Kafka | v3.7 |
+| 对象存储 (温) | SeaweedFS (S3 API) | latest |
+| 对象存储 (冷) | 阿里云 OSS | SDK v1.4 |
 | 依赖注入 | Wire | v0.6.0 |
 | 认证 | JWT (golang-jwt/jwt v5) | v5 |
 | 容器编排 | Docker/Podman Compose | - |
@@ -74,12 +82,16 @@
 - [x] 分块上传 (大文件支持，5MB/块)
 - [x] 秒传 (基于 MD5 去重)
 - [x] 断点续传 (Redis 记录上传状态)
+- [x] 三级存储 (本地磁盘 → SeaweedFS → 阿里云 OSS)
+- [x] LRU 自动冷迁移 (SeaweedFS 用量超阈值 → Kafka → worker 迁入 OSS)
+- [x] 磁盘满保护 (CheckUpload 返回 disk_full → 503)
+- [x] 磁盘用量查询 (GetDiskUsage API)
 - [x] 文件夹管理 (树形结构)
 - [x] 文件搜索 (模糊匹配)
 - [x] 回收站 (软删除 + 恢复)
 - [x] 文件分享 (链接 + 提取码 + 过期时间)
 - [x] 文件移动/重命名
-- [x] 下载链接获取
+- [x] 下载链接获取 (按 StorageType 签发 SeaweedFS/OSS 预签名 URL)
 
 ### 网关
 - [x] JWT 认证中间件 (保护路由)
@@ -198,7 +210,7 @@ make run-gateway    # 启动 API 网关 (HTTP :8080)
 
 ### 容器化运行
 ```bash
-docker-compose up -d   # 或 podman-compose up -d
+docker-compose up -d -- build   # 或 podman-compose up -d --build
 ```
 
 说明：
@@ -243,8 +255,9 @@ go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 | PUT | /api/v1/file/rename | 重命名文件 |
 | DELETE | /api/v1/files | 删除文件 (移入回收站) |
 | PUT | /api/v1/file/move | 移动文件 |
-| GET | /api/v1/file/download/:file_id | 获取下载链接 |
+| GET | /api/v1/file/download/:file_id | 获取下载链接 (预签名 URL) |
 | GET | /api/v1/files/search | 搜索文件 |
+| GET | /api/v1/disk-usage | 磁盘/SeaweedFS 用量 |
 | GET | /api/v1/trash | 回收站列表 |
 | POST | /api/v1/trash/restore | 恢复文件 |
 | DELETE | /api/v1/trash | 彻底删除 |
@@ -257,17 +270,24 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
                     │                    ▲
                     │──gRPC──▶ File Service ──gRPC──┘
                                 (UpdateStorageUsed)
+                                    │
+                         ┌──────────┴──────────┐
+                         ▼                      ▼
+                    SeaweedFS (S3)         阿里云 OSS
+                         │    Kafka              ▲
+                         └──→ cloud-migrate ──→ file-worker
 ```
 
 - Gateway 通过 Consul 发现 `user-service` 和 `file-service`
 - File Service 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` 更新存储用量
-- 所有 gRPC 连接使用 Kratos gRPC 客户端 + Consul 服务发现
+- File Service 合并后上传 SeaweedFS，超阈值时通过 Kafka 驱动 worker 迁移到 OSS
+- 下载时按 `storage_type` 签发 SeaweedFS 或 OSS 预签名 URL
 
 ## 消息队列
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| file-transfer | FileService | file-worker (TransferWorker) | 文件异步转存 OSS |
+| cloud-migrate | FileService (LRU 淘汰) | file-worker | SeaweedFS → 阿里云 OSS 冷迁移 |
 | file-thumbnail | FileService | file-worker (ThumbnailWorker) | 生成文件缩略图 |
 
 客户端使用 `segmentio/kafka-go`，未配置 Kafka 时自动降级为 `noopProducer`。
@@ -285,24 +305,30 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | CONSUL_ADDR | Consul 地址 | user, file, gateway | localhost:8500 |
 | JWT_SECRET | JWT 密钥 | gateway | *** |
 | GATEWAY_ADDR | 网关监听地址 | gateway | :8080 |
-| OSS_ENDPOINT | OSS 端点 | file | oss-cn-hangzhou.aliyuncs.com |
-| OSS_ACCESS_KEY_ID | OSS AK | file | *** |
-| OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
+| SEAWEEDFS_ENDPOINT | SeaweedFS S3 端点 | file, worker | http://seaweedfs:8333 |
+| SEAWEEDFS_BUCKET | SeaweedFS Bucket | file, worker | light-cloud-disk |
+| SEAWEEDFS_ACCESS_KEY | SeaweedFS AK | file, worker | - |
+| SEAWEEDFS_SECRET_KEY | SeaweedFS SK | file, worker | - |
+| OSS_ENDPOINT | 阿里云 OSS 端点 | file, worker | oss-cn-hangzhou.aliyuncs.com |
+| OSS_ACCESS_KEY_ID | OSS AK | file, worker | *** |
+| OSS_ACCESS_KEY_SECRET | OSS SK | file, worker | *** |
+| LOCAL_MAX_BYTES | 本地磁盘上限 | file | 10737418240 (10GB) |
+| SEAWEEDFS_MAX_BYTES | SeaweedFS 上限 | file | 53687091200 (50GB) |
+| SEAWEEDFS_THRESHOLD_PCT | 淘汰阈值% | file | 80 |
 | KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
 | KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
-| KAFKA_TRANSFER_TOPIC | 转存 topic | file-worker | file-transfer |
+| KAFKA_CLOUD_MIGRATE_TOPIC | 冷迁移 topic | file-worker | cloud-migrate |
 | KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
 | FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
 | FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
-| DOWNLOAD_URL_PREFIX | 下载 URL 前缀 | file | http://localhost:8080/downloads |
 
 ## 测试覆盖
 
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 30 | Mock FileRepo + UserClient + MessageProducer |
-| app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
+| app/file/internal/biz | 单元测试 | 33 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
+| app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag) |
@@ -323,6 +349,7 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 ## 文档
 
 - [微服务架构设计](docs/architecture.md)
+- [三级存储架构](docs/three-tier-storage.md)
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
 - [服务发现与通信](docs/service-discovery.md)
@@ -332,6 +359,18 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - [前端架构与设计](docs/frontend.md)
 
 ## 更新日志
+
+### v5.0.0 (2026)
+- **三级存储架构**: 本地磁盘(分块暂存) → SeaweedFS(温数据) → 阿里云 OSS(冷数据)
+- LRU 自动冷迁移: SeaweedFS 超阈值 → Kafka cloud-migrate → file-worker 异步搬迁到 OSS
+- 磁盘满保护: CheckUpload 返回 disk_full → Gateway 503
+- 磁盘用量查询 API (GetDiskUsage)
+- 下载链接按 StorageType 路由 (SeaweedFS/OSS 预签名 URL)
+- SeaweedFS (aws-sdk-go-v2/s3) + 阿里云 OSS (alibabacloud-oss-go-sdk-v2) 集成
+- Redis 原子计数器追踪 local/seaweedfs 磁盘用量
+- file-worker 完整实现: SeaweedFS→OSS 数据搬迁 + DB/Redis 状态更新
+- Docker Compose 新增 SeaweedFS 服务
+- 71 个单元测试 (biz 33 + handler 15 + middleware 9 + user/biz 14)
 
 ### v4.0.0 (2026)
 - 新增 Vue 3 前端 (TypeScript + Vite + Tailwind CSS v4)

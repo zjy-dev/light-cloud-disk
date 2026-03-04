@@ -8,15 +8,16 @@
 |------|------|------|------|
 | consul | hashicorp/consul:1.19 | 8500 (UI+API) | 服务注册与发现 |
 | mysql | mysql:8.0 | 3306 | 主数据库 |
-| redis | redis:7-alpine | 6379 | 分块上传状态缓存 |
-| kafka | apache/kafka:3.6.2 | 9092 | 消息队列 (预留) |
+| redis | redis:7-alpine | 6379 | 分块状态 + 磁盘用量计数 |
+| kafka | apache/kafka:3.7.0 | 9092 | 消息队列 (cloud-migrate, file-thumbnail) |
+| seaweedfs | chrislusf/seaweedfs:latest | 9333, 8333 | S3 兼容对象存储 (温数据) |
 | user-service | 自构建 | 9001 (gRPC) | 用户服务 |
 | file-service | 自构建 | 9002 (gRPC) | 文件服务 |
 | gateway | 自构建 | 8080 (HTTP) | API 网关 |
-| file-worker | 自构建 | - | Kafka 异步任务消费 |
+| file-worker | 自构建 | - | Kafka 消费：SeaweedFS→OSS 冷迁移 |
 | frontend | 自构建 | 3000 (HTTP→Nginx) | Vue 3 SPA |
 
-说明：Gateway 会只读挂载 `file_storage` 卷到 `/app/store`，并通过 `/downloads` 路由提供下载访问。
+说明：合并后文件上传到 SeaweedFS (S3 API)，下载通过预签名 URL 直接访问 SeaweedFS 或 OSS，不再经过 Gateway 代理。
 
 ## 快速启动
 

@@ -47,9 +47,6 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Local file download static route (mounted in compose as read-only volume)
-	r.Static("/downloads", "/app/store")
-
 	// Public routes (no auth)
 	api := r.Group("/api/v1")
 	{
@@ -77,6 +74,7 @@ func main() {
 		auth.PUT("/file/move", fileHandler.MoveFile)
 		auth.GET("/file/download/:file_id", fileHandler.GetDownloadURL)
 		auth.GET("/files/search", fileHandler.SearchFiles)
+		auth.GET("/disk-usage", fileHandler.GetDiskUsage)
 
 		// Trash
 		auth.GET("/trash", fileHandler.ListTrash)

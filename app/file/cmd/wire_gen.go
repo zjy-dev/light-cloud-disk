@@ -20,7 +20,7 @@ import (
 
 // Injectors from wire.go:
 
-func wireApp(confServer *conf.Server, confData *conf.Data, logger log.Logger, registry *consul.Registry, userServiceClient v1.UserServiceClient) (*kratos.App, func(), error) {
+func wireApp(confServer *conf.Server, confData *conf.Data, storage *conf.Storage, logger log.Logger, registry *consul.Registry, userServiceClient v1.UserServiceClient) (*kratos.App, func(), error) {
 	dataData, cleanup, err := data.NewData(confData, logger)
 	if err != nil {
 		return nil, nil, err
@@ -32,7 +32,20 @@ func wireApp(confServer *conf.Server, confData *conf.Data, logger log.Logger, re
 		cleanup()
 		return nil, nil, err
 	}
-	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, logger)
+	objectStorage, err := data.NewSeaweedFSClient(storage, logger)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	cloudStorage, err := data.NewOSSClient(storage, logger)
+	if err != nil {
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	storageConfig := provideStorageConfig(storage)
+	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, objectStorage, cloudStorage, storageConfig, logger)
 	fileService := service.NewFileService(fileUsecase, logger)
 	grpcServer := server.NewGRPCServer(confServer, fileService, logger)
 	app := newApp(logger, grpcServer, registry)

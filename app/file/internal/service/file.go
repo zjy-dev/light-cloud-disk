@@ -24,13 +24,14 @@ func NewFileService(uc *biz.FileUsecase, logger log.Logger) *FileService {
 }
 
 func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadRequest) (*pb.CheckUploadReply, error) {
-	canFastUpload, uploadedChunks, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
+	canFastUpload, uploadedChunks, diskFull, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
 	if err != nil {
 		return nil, err
 	}
 	return &pb.CheckUploadReply{
 		CanFastUpload:  canFastUpload,
 		UploadedChunks: uploadedChunks,
+		DiskFull:       diskFull,
 	}, nil
 }
 
@@ -201,6 +202,19 @@ func (s *FileService) SearchFiles(ctx context.Context, req *pb.SearchFilesReques
 	return &pb.SearchFilesReply{
 		Files: pbFiles,
 		Total: total,
+	}, nil
+}
+
+func (s *FileService) GetDiskUsage(ctx context.Context, _ *pb.GetDiskUsageRequest) (*pb.GetDiskUsageReply, error) {
+	localUsed, localMax, swfUsed, swfMax, err := s.uc.GetDiskUsage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GetDiskUsageReply{
+		LocalUsedBytes:     localUsed,
+		LocalMaxBytes:      localMax,
+		SeaweedfsUsedBytes: swfUsed,
+		SeaweedfsMaxBytes:  swfMax,
 	}, nil
 }
 

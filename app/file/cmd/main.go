@@ -14,6 +14,7 @@ import (
 	consulapi "github.com/hashicorp/consul/api"
 
 	userv1 "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
+	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 
 	kratosgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
@@ -68,6 +69,28 @@ func newUserServiceClient(r *consul.Registry) userv1.UserServiceClient {
 	return userv1.NewUserServiceClient(conn)
 }
 
+func provideStorageConfig(c *conf.Storage) *biz.StorageConfig {
+	cfg := &biz.StorageConfig{
+		LocalMaxBytes:         10 * 1024 * 1024 * 1024, // 10 GB default
+		SeaweedFSMaxBytes:     50 * 1024 * 1024 * 1024, // 50 GB default
+		SeaweedFSThresholdPct: 80,
+	}
+	if c != nil {
+		if c.LocalMaxBytes > 0 {
+			cfg.LocalMaxBytes = c.LocalMaxBytes
+		}
+		if c.Seaweedfs != nil {
+			if c.Seaweedfs.MaxBytes > 0 {
+				cfg.SeaweedFSMaxBytes = c.Seaweedfs.MaxBytes
+			}
+			if c.Seaweedfs.ThresholdPercent > 0 {
+				cfg.SeaweedFSThresholdPct = c.Seaweedfs.ThresholdPercent
+			}
+		}
+	}
+	return cfg
+}
+
 func main() {
 	flag.Parse()
 
@@ -97,7 +120,7 @@ func main() {
 	r := newRegistry()
 	userClient := newUserServiceClient(r)
 
-	app, cleanup, err := wireApp(bc.Server, bc.Data, logger, r, userClient)
+	app, cleanup, err := wireApp(bc.Server, bc.Data, bc.Storage, logger, r, userClient)
 	if err != nil {
 		panic(err)
 	}

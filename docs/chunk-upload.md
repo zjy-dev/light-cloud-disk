@@ -16,25 +16,24 @@
                     ┌──────────────────────────────────────┐
                     │         File Service (:9002)          │
                     │           CheckUpload                │
+                    │  (检查秒传 + 续传 + 磁盘是否满)       │
                     └───────────────┬──────────────────────┘
                                     │
-                             ┌──────┴──────┐
-                             │             │
-                             ▼             ▼
-                       秒传成功       检查 Redis
-                    (store 已存在)     已上传分块
-                             │             │
-                      ┌──────┴──────┐      │
-                      │             │      │
-                      ▼             ▼      ▼
-                   返回秒传     返回分块    全新上传
-                   完成         列表(续传)  (从头开始)
-                                    │      │
-                                    ▼      ▼
+                       ┌────────────┼────────────┐
+                       │            │            │
+                       ▼            ▼            ▼
+                  秒传成功     检查 Redis     磁盘已满
+               (store 已存在)  已上传分块    (disk_full)
+                       │            │            │
+                       ▼            ▼            ▼
+                  返回秒传     返回分块列表   Gateway
+                  完成         (续传)        返回 503
+                                    │
+                                    ▼
                     ┌──────────────────────────────────────┐
                     │            UploadChunk               │
                     │  Gateway: POST /api/v1/file/upload-chunk │
-                    │  (循环上传每个分块，跳过已上传的)         │
+                    │  分块写本地磁盘 + Redis INCRBY 计数    │
                     └───────────────┬──────────────────────┘
                                     │
                                     ▼
@@ -43,10 +42,13 @@
                     │  Gateway: POST /api/v1/file/merge-chunks │
                     │  1. 合并所有分块为完整文件             │
                     │  2. 计算 MD5 校验                     │
-                    │  3. 写入数据库 (file_meta + file_store)│
-                    │  4. gRPC 调用 User Service            │
+                    │  3. 上传到 SeaweedFS (S3 API)         │
+                    │     ↳ 失败则兜底直接上传 OSS          │
+                    │  4. 写入数据库 (file_meta + file_store)│
+                    │  5. gRPC 调用 User Service            │
                     │     更新用户存储用量                   │
-                    │  5. 清理 Redis 和临时文件              │
+                    │  6. 清理 Redis 和本地临时文件          │
+                    │  7. 异步触发 LRU 淘汰检查             │
                     └──────────────────────────────────────┘
 ```
 
@@ -122,13 +124,21 @@ async function computeMd5(file: File, onProgress?: (pct: number) => void): Promi
 ```go
 // app/file/internal/biz/file.go
 func (uc *FileUsecase) MergeChunks(ctx context.Context, ...) error {
-    // ... 合并逻辑
+    // ... 本地分块合并
+
+    // 上传到 SeaweedFS (失败则兜底 OSS)
+    if err := uc.objStore.Put(ctx, key, file); err != nil {
+        uc.cloudStore.Put(ctx, key, file)
+    }
 
     // 通过 gRPC 调用 User Service (Consul 发现)
     if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
         uc.log.Warnf("failed to update storage: %v", err)
         // 容错: 不影响合并结果
     }
+
+    // 异步 LRU 淘汰检查
+    go uc.maybeEvictToCloud(context.Background())
     return nil
 }
 ```
@@ -137,28 +147,37 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, ...) error {
 
 ```go
 // app/file/internal/biz/file.go
-func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, error) {
-    // 1. 检查文件是否已存在（秒传）
+func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, error) {
+    // 1. 检查本地磁盘是否已满
+    localUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
+    if localUsed+fileSize > uc.storageCfg.LocalMaxBytes {
+        return false, nil, true, nil  // disk_full = true
+    }
+
+    // 2. 检查文件是否已存在（秒传）
     store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
     if err == nil && store != nil {
-        return true, nil, nil  // 可以秒传
+        return true, nil, false, nil  // 可以秒传
     }
 
-    // 2. 获取已上传的分块（断点续传）
+    // 3. 获取已上传的分块（断点续传）
     uploadedChunks, err := uc.repo.GetUploadedChunks(ctx, fileMD5)
     if err != nil {
-        return false, nil, err
+        return false, nil, false, err
     }
 
-    return false, uploadedChunks, nil
+    return false, uploadedChunks, false, nil
 }
 ```
 
 ## 面试要点
 
 1. **为什么用 MD5？** — 快速判断文件是否相同，节省存储空间
-2. **为什么用 Redis？** — 高性能读写，适合临时状态存储，自带过期机制
+2. **为什么用 Redis？** — 高性能读写，适合临时状态存储，自带过期机制；同时用 Redis 原子计数器追踪本地/SeaweedFS 磁盘用量
 3. **分块大小选择？** — 5MB，平衡传输效率和失败重传成本
 4. **并发上传？** — 支持多分块并行上传，提高速度
 5. **存储用量更新失败？** — 容错处理，仅告警不阻塞，可通过定时任务修正
 6. **引用计数？** — 多个用户秒传同一文件时共享存储，删除时减引用，引用为 0 才删物理文件
+7. **磁盘满怎么办？** — `CheckUpload` 检测本地磁盘计数器，满则返回 `disk_full=true`，Gateway 回复 503
+8. **合并后文件去哪？** — 先上传 SeaweedFS，失败则兜底上传 OSS，同时更新 `file_store.storage_type`
+9. **合并后为什么还要淘汰？** — 异步 `maybeEvictToCloud()` 检查 SeaweedFS 用量，超阈值则通过 Kafka 驱动 worker 将冷数据迁移到 OSS

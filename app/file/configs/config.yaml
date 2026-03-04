@@ -15,10 +15,27 @@ data:
   kafka:
     brokers:
       - ${KAFKA_BROKERS:localhost:9092}
-    transfer_topic: file-transfer
     thumbnail_topic: file-thumbnail
+    cloud_migrate_topic: cloud-migrate
 
 upload:
   chunk_size: 5242880  # 5MB
   temp_dir: ./tmp
   store_dir: ./store
+
+storage:
+  local_max_bytes: 10737418240  # 10 GB
+  seaweedfs:
+    endpoint: ${SEAWEEDFS_ENDPOINT:}
+    region: us-east-1
+    bucket: light-cloud-disk
+    access_key: ${SEAWEEDFS_ACCESS_KEY:}
+    secret_key: ${SEAWEEDFS_SECRET_KEY:}
+    max_bytes: 53687091200  # 50 GB
+    threshold_percent: 80
+  oss:
+    endpoint: ${OSS_ENDPOINT:}
+    bucket: ${OSS_BUCKET:light-cloud-disk}
+    access_key_id: ${OSS_ACCESS_KEY_ID:}
+    access_key_secret: ${OSS_ACCESS_KEY_SECRET:}
+    region: ${OSS_REGION:cn-hangzhou}

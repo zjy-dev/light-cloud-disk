@@ -81,6 +81,7 @@ type mockFileClient struct {
 	createShareFn     func(ctx context.Context, in *filev1.CreateShareRequest, opts ...grpc.CallOption) (*filev1.CreateShareReply, error)
 	getShareFn        func(ctx context.Context, in *filev1.GetShareRequest, opts ...grpc.CallOption) (*filev1.GetShareReply, error)
 	searchFilesFn     func(ctx context.Context, in *filev1.SearchFilesRequest, opts ...grpc.CallOption) (*filev1.SearchFilesReply, error)
+	getDiskUsageFn    func(ctx context.Context, in *filev1.GetDiskUsageRequest, opts ...grpc.CallOption) (*filev1.GetDiskUsageReply, error)
 }
 
 func (m *mockFileClient) CheckUpload(ctx context.Context, in *filev1.CheckUploadRequest, opts ...grpc.CallOption) (*filev1.CheckUploadReply, error) {
@@ -184,6 +185,13 @@ func (m *mockFileClient) GetShare(ctx context.Context, in *filev1.GetShareReques
 func (m *mockFileClient) SearchFiles(ctx context.Context, in *filev1.SearchFilesRequest, opts ...grpc.CallOption) (*filev1.SearchFilesReply, error) {
 	if m.searchFilesFn != nil {
 		return m.searchFilesFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) GetDiskUsage(ctx context.Context, in *filev1.GetDiskUsageRequest, opts ...grpc.CallOption) (*filev1.GetDiskUsageReply, error) {
+	if m.getDiskUsageFn != nil {
+		return m.getDiskUsageFn(ctx, in, opts...)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -514,6 +522,54 @@ func TestFileHandler_CheckUpload_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	result := parseJSON(t, w)
 	assert.Equal(t, true, result["can_fast_upload"])
+}
+
+func TestFileHandler_CheckUpload_DiskFull(t *testing.T) {
+	fileClient := &mockFileClient{
+		checkUploadFn: func(_ context.Context, _ *filev1.CheckUploadRequest, _ ...grpc.CallOption) (*filev1.CheckUploadReply, error) {
+			return &filev1.CheckUploadReply{DiskFull: true}, nil
+		},
+	}
+
+	h := NewFileHandler(newTestClients(&mockUserClient{}, fileClient))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("POST", "/api/v1/file/check-upload", jsonBody(map[string]any{
+		"file_md5":     "abc123",
+		"file_size":    1024,
+		"total_chunks": 5,
+	}))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CheckUpload(c)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	result := parseJSON(t, w)
+	assert.Equal(t, true, result["disk_full"])
+}
+
+func TestFileHandler_GetDiskUsage_Success(t *testing.T) {
+	fileClient := &mockFileClient{
+		getDiskUsageFn: func(_ context.Context, _ *filev1.GetDiskUsageRequest, _ ...grpc.CallOption) (*filev1.GetDiskUsageReply, error) {
+			return &filev1.GetDiskUsageReply{
+				LocalUsedBytes:      1024,
+				LocalMaxBytes:       10737418240,
+				SeaweedfsUsedBytes:  2048,
+				SeaweedfsMaxBytes:   53687091200,
+			}, nil
+		},
+	}
+
+	h := NewFileHandler(newTestClients(&mockUserClient{}, fileClient))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/disk-usage", nil)
+
+	h.GetDiskUsage(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestFileHandler_RenameFile_GRPCError(t *testing.T) {

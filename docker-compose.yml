@@ -74,7 +74,7 @@ services:
       - cloud-disk
 
   kafka:
-    image: docker.io/apache/kafka:3.6.2
+    image: docker.io/apache/kafka:3.7.0
     container_name: cloud-disk-kafka
     environment:
       KAFKA_NODE_ID: 1
@@ -108,6 +108,30 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
+    networks:
+      - cloud-disk
+
+  seaweedfs:
+    image: docker.io/chrislusf/seaweedfs:latest
+    container_name: cloud-disk-seaweedfs
+    command: "server -s3 -dir=/data"
+    environment:
+      NO_PROXY: "*"
+      no_proxy: "*"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+    ports:
+      - "8333:8333"
+      - "9333:9333"
+    volumes:
+      - seaweedfs_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9333/cluster/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - cloud-disk
 
@@ -162,13 +186,16 @@ services:
       REDIS_ADDR: redis:6379
       CONSUL_ADDR: consul:8500
       KAFKA_BROKERS: kafka:9092
+      SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
+      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
+      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
-      OSS_BUCKET_NAME: ${OSS_BUCKET_NAME:-}
+      OSS_REGION: ${OSS_REGION:-cn-hangzhou}
+      OSS_BUCKET: ${OSS_BUCKET:-light-cloud-disk}
       FILE_TMP_DIR: /app/tmp
       FILE_STORE_DIR: /app/store
-      DOWNLOAD_URL_PREFIX: ${DOWNLOAD_URL_PREFIX:-http://localhost:8080/downloads}
       NO_PROXY: "*"
       no_proxy: "*"
       HTTP_PROXY: ""
@@ -178,7 +205,6 @@ services:
     ports:
       - "9002:9002"
     volumes:
-      - file_storage:/app/store
       - file_tmp:/app/tmp
     depends_on:
       mysql:
@@ -188,6 +214,8 @@ services:
       consul:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      seaweedfs:
         condition: service_healthy
     networks:
       - cloud-disk
@@ -202,8 +230,25 @@ services:
     image: light-cloud-disk/file-worker:${VERSION:-latest}
     container_name: cloud-disk-file-worker
     environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root123}
+      DB_NAME: ${DB_NAME:-cloud_disk}
+      REDIS_ADDR: redis:6379
       KAFKA_BROKERS: kafka:9092
       KAFKA_GROUP_ID: file-worker-group
+      KAFKA_CLOUD_MIGRATE_TOPIC: cloud-migrate
+      KAFKA_THUMBNAIL_TOPIC: file-thumbnail
+      SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
+      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
+      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
+      SEAWEEDFS_BUCKET: light-cloud-disk
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_REGION: ${OSS_REGION:-cn-hangzhou}
+      OSS_BUCKET: ${OSS_BUCKET:-light-cloud-disk}
       NO_PROXY: "*"
       no_proxy: "*"
       HTTP_PROXY: ""
@@ -211,7 +256,13 @@ services:
       http_proxy: ""
       https_proxy: ""
     depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       kafka:
+        condition: service_healthy
+      seaweedfs:
         condition: service_healthy
     networks:
       - cloud-disk
@@ -237,8 +288,6 @@ services:
       https_proxy: ""
     ports:
       - "8080:8080"
-    volumes:
-      - file_storage:/app/store:ro
     depends_on:
       consul:
         condition: service_healthy
@@ -253,6 +302,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      network: host
     image: light-cloud-disk/frontend:${VERSION:-latest}
     container_name: cloud-disk-frontend
     environment:
@@ -275,7 +325,7 @@ volumes:
   mysql_data:
   redis_data:
   kafka_data:
-  file_storage:
+  seaweedfs_data:
   file_tmp:
 
 networks:

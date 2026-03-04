@@ -38,12 +38,14 @@ func (FilePO) TableName() string {
 }
 
 type FileStorePO struct {
-	ID        int64  `gorm:"primaryKey;autoIncrement"`
-	FileMD5   string `gorm:"uniqueIndex;size:32;not null"`
-	Size      int64  `gorm:"not null"`
-	StorePath string `gorm:"size:512;not null"`
-	RefCount  int32  `gorm:"default:1"`
-	CreatedAt time.Time
+	ID             int64     `gorm:"primaryKey;autoIncrement"`
+	FileMD5        string    `gorm:"uniqueIndex;size:32;not null"`
+	Size           int64     `gorm:"not null"`
+	StorePath      string    `gorm:"size:512;not null"`
+	StorageType    string    `gorm:"size:16;not null;default:seaweedfs"`
+	RefCount       int32     `gorm:"default:1"`
+	LastAccessedAt time.Time `gorm:"autoUpdateTime"`
+	CreatedAt      time.Time
 }
 
 func (FileStorePO) TableName() string {
@@ -188,20 +190,23 @@ func (r *fileRepo) FindStoreByMD5(ctx context.Context, md5 string) (*biz.FileSto
 		return nil, err
 	}
 	return &biz.FileStore{
-		ID:        po.ID,
-		FileMD5:   po.FileMD5,
-		Size:      po.Size,
-		StorePath: po.StorePath,
-		RefCount:  po.RefCount,
+		ID:             po.ID,
+		FileMD5:        po.FileMD5,
+		Size:           po.Size,
+		StorePath:      po.StorePath,
+		StorageType:    po.StorageType,
+		RefCount:       po.RefCount,
+		LastAccessedAt: po.LastAccessedAt,
 	}, nil
 }
 
 func (r *fileRepo) CreateStore(ctx context.Context, store *biz.FileStore) error {
 	po := &FileStorePO{
-		FileMD5:   store.FileMD5,
-		Size:      store.Size,
-		StorePath: store.StorePath,
-		RefCount:  1,
+		FileMD5:     store.FileMD5,
+		Size:        store.Size,
+		StorePath:   store.StorePath,
+		StorageType: store.StorageType,
+		RefCount:    1,
 	}
 	return r.data.db.WithContext(ctx).Create(po).Error
 }
@@ -358,6 +363,69 @@ func (r *fileRepo) SaveChunkInfo(ctx context.Context, chunk *biz.ChunkInfo) erro
 func (r *fileRepo) ClearChunkInfo(ctx context.Context, fileMD5 string) error {
 	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
 	return r.data.redis.Del(ctx, key).Err()
+}
+
+func (r *fileRepo) UpdateStorageLocation(ctx context.Context, fileMD5 string, storageType string, newPath string) error {
+	return r.data.db.WithContext(ctx).Model(&FileStorePO{}).
+		Where("file_md5 = ?", fileMD5).
+		Updates(map[string]interface{}{
+			"storage_type": storageType,
+			"store_path":   newPath,
+		}).Error
+}
+
+func (r *fileRepo) UpdateLastAccessed(ctx context.Context, fileMD5 string) error {
+	return r.data.db.WithContext(ctx).Model(&FileStorePO{}).
+		Where("file_md5 = ?", fileMD5).
+		Update("last_accessed_at", time.Now()).Error
+}
+
+func (r *fileRepo) FindLRUStores(ctx context.Context, storageType string, limit int) ([]*biz.FileStore, error) {
+	var pos []FileStorePO
+	if err := r.data.db.WithContext(ctx).
+		Where("storage_type = ?", storageType).
+		Order("last_accessed_at ASC").
+		Limit(limit).
+		Find(&pos).Error; err != nil {
+		return nil, err
+	}
+	stores := make([]*biz.FileStore, len(pos))
+	for i, po := range pos {
+		stores[i] = &biz.FileStore{
+			ID:             po.ID,
+			FileMD5:        po.FileMD5,
+			Size:           po.Size,
+			StorePath:      po.StorePath,
+			StorageType:    po.StorageType,
+			RefCount:       po.RefCount,
+			LastAccessedAt: po.LastAccessedAt,
+		}
+	}
+	return stores, nil
+}
+
+func (r *fileRepo) SumSizeByStorageType(ctx context.Context, storageType string) (int64, error) {
+	var total int64
+	if err := r.data.db.WithContext(ctx).Model(&FileStorePO{}).
+		Where("storage_type = ?", storageType).
+		Select("COALESCE(SUM(size), 0)").Scan(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (r *fileRepo) GetDiskUsage(ctx context.Context, diskType string) (int64, error) {
+	key := fmt.Sprintf("disk_usage:%s", diskType)
+	val, err := r.data.redis.Get(ctx, key).Int64()
+	if err != nil {
+		return 0, nil // key not found → 0
+	}
+	return val, nil
+}
+
+func (r *fileRepo) IncrDiskUsage(ctx context.Context, diskType string, delta int64) error {
+	key := fmt.Sprintf("disk_usage:%s", diskType)
+	return r.data.redis.IncrBy(ctx, key, delta).Err()
 }
 
 func (r *fileRepo) poToDomain(po *FilePO) *biz.File {

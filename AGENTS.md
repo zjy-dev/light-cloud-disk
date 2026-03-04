@@ -43,16 +43,17 @@
 │  User Service  │ │  File Service  │
 │  (gRPC :9001)  │◄│  (gRPC :9002)  │
 │  Kratos v2     │ │  Kratos v2     │
-└───────┬────────┘ └───┬───────┬───┘
-        │              │       │
-        ▼              ▼       ▼
-    ┌────────┐   ┌────────┐ ┌───────┐
-    │ MySQL  │   │ MySQL  │ │ Redis │
-    └────────┘   └────────┘ └───────┘
+└───────┬────────┘ └──┬────┬───┬───┘
+        │             │    │   │
+        ▼             ▼    ▼   ▼
+    ┌────────┐   ┌──────┐ ┌─────┐ ┌───────────┐
+    │ MySQL  │   │MySQL │ │Redis│ │ SeaweedFS │
+    └────────┘   └──────┘ └─────┘ └───────────┘
 
     ← ─ ─ Consul 服务发现 ─ ─ →
 
-    File Service ──→ Kafka ──→ file-worker (异步转存/缩略图)
+    File Service ──→ Kafka ──→ file-worker ──→ 阿里云 OSS
+    (cloud-migrate topic)      (SeaweedFS → OSS 冷迁移)
 ```
 
 每个 Kratos 服务内部采用 Clean Architecture 分层:
@@ -243,9 +244,9 @@ frontend/
 - [x] UpdateStorageUsed - 更新存储用量 (供 File Service 调用)
 
 ### 文件服务 (app/file/internal/biz/file.go)
-- [x] CheckUpload - 秒传/断点续传检查
-- [x] SaveChunk - 保存分块
-- [x] MergeChunks - 合并分块 (完成后调用 UserClient.UpdateStorageUsed + 发送 Kafka 消息)
+- [x] CheckUpload - 秒传/断点续传检查 + 磁盘满检测
+- [x] SaveChunk - 保存分块 (本地磁盘 + Redis 用量计数)
+- [x] MergeChunks - 合并分块 → 上传 SeaweedFS (失败兜底 OSS) → UserClient.UpdateStorageUsed → 异步 LRU 淘汰
 - [x] ListFiles - 文件列表
 - [x] CreateFolder - 创建文件夹
 - [x] RenameFile - 重命名
@@ -257,6 +258,9 @@ frontend/
 - [x] CreateShare - 创建分享
 - [x] GetShare - 获取分享内容
 - [x] SearchFiles - 搜索文件
+- [x] GetDownloadURL - 按 StorageType 签发预签名 URL
+- [x] GetDiskUsage - 查询本地/SeaweedFS 磁盘用量
+- [x] maybeEvictToCloud - LRU 淘汰 (SeaweedFS → OSS)
 
 ### API 网关 (app/gateway/)
 - [x] HTTP→gRPC 代理 (所有用户/文件操作)
@@ -265,7 +269,7 @@ frontend/
 - [x] Consul 服务发现客户端
 
 ### file-worker (app/file/cmd/worker/)
-- [x] Kafka 消费：TransferWorker (file-transfer topic) — OSS 转存 (stub)
+- [x] Kafka 消费：CloudMigrateWorker (cloud-migrate topic) — SeaweedFS→OSS 数据搬迁 + DB/Redis 更新
 - [x] Kafka 消费：ThumbnailWorker (file-thumbnail topic) — 缩略图生成 (stub)
 
 ## 测试策略
@@ -273,8 +277,8 @@ frontend/
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 30 | Mock FileRepo + UserClient + MessageProducer |
-| app/gateway/internal/handler | 单元测试 | 13 | Mock gRPC 客户端 |
+| app/file/internal/biz | 单元测试 | 33 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
+| app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS 中间件 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag: integration) |
@@ -290,8 +294,8 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - **Gateway → User Service**: 通过 Consul 发现 `user-service`，gRPC 调用
 - **Gateway → File Service**: 通过 Consul 发现 `file-service`，gRPC 调用
 - **File Service → User Service**: 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` RPC
-- **File Service → Kafka**: MergeChunks 完成后发送 TransferMessage / ThumbnailMessage
-- **file-worker → Kafka**: 消费 file-transfer / file-thumbnail topic
+- **File Service → Kafka**: MergeChunks 完成后异步 `maybeEvictToCloud()` 发送 CloudMigrateMessage / 媒体文件发 ThumbnailMessage
+- **file-worker → Kafka**: 消费 cloud-migrate / file-thumbnail topic
 
 ## MQ 集成 (Kafka)
 
@@ -299,16 +303,18 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 | 文件 | 职责 |
 |------|------|
-| `app/file/internal/biz/file.go` | `MessageProducer` 接口 + 消息结构体 |
-| `app/file/internal/data/kafka.go` | `kafkaProducer` / `noopProducer` 实现 |
-| `app/file/cmd/worker/main.go` | 独立消费进程 (TransferWorker + ThumbnailWorker) |
+| `app/file/internal/biz/file.go` | `MessageProducer` 接口 + `CloudMigrateMessage`/`ThumbnailMessage` 结构体 + `maybeEvictToCloud()` 淘汰逻辑 |
+| `app/file/internal/data/kafka.go` | `kafkaProducer` / `noopProducer` 实现 (cloud-migrate + file-thumbnail 两个 Writer) |
+| `app/file/cmd/worker/main.go` | 独立消费进程 (CloudMigrateWorker + ThumbnailWorker) |
 
-### TransferMessage (file-transfer)
+### CloudMigrateMessage (cloud-migrate)
 ```json
 {
+  "file_store_id": 42,
   "file_md5": "abc123...",
-  "cur_location": "/store/abc123/file.zip",
-  "dest_location": "oss://bucket/abc123/file.zip"
+  "cur_location": "abc123/file.zip",
+  "dest_location": "oss://abc123/file.zip",
+  "size": 10485760
 }
 ```
 
@@ -316,7 +322,7 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 ```json
 {
   "file_id": 123,
-  "file_path": "/store/abc123/image.jpg",
+  "file_path": "abc123/image.jpg",
   "file_type": "image/jpeg"
 }
 ```
@@ -336,16 +342,25 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | CONSUL_ADDR | Consul 地址 | user, file, gateway | localhost:8500 |
 | JWT_SECRET | JWT 密钥 | gateway | *** |
 | GATEWAY_ADDR | 网关监听地址 | gateway | :8080 |
-| OSS_ENDPOINT | OSS 端点 | file | oss-cn-hangzhou.aliyuncs.com |
-| OSS_ACCESS_KEY_ID | OSS AK | file | *** |
-| OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
+| SEAWEEDFS_ENDPOINT | SeaweedFS S3 端点 | file, worker | http://seaweedfs:8333 |
+| SEAWEEDFS_REGION | S3 Region | file, worker | us-east-1 |
+| SEAWEEDFS_BUCKET | S3 Bucket | file, worker | light-cloud-disk |
+| SEAWEEDFS_ACCESS_KEY | S3 AK | file, worker | - |
+| SEAWEEDFS_SECRET_KEY | S3 SK | file, worker | - |
+| OSS_ENDPOINT | 阿里云 OSS 端点 | file, worker | oss-cn-hangzhou.aliyuncs.com |
+| OSS_REGION | OSS Region | file, worker | - |
+| OSS_BUCKET | OSS Bucket | file, worker | - |
+| OSS_ACCESS_KEY_ID | OSS AK | file, worker | *** |
+| OSS_ACCESS_KEY_SECRET | OSS SK | file, worker | *** |
+| LOCAL_MAX_BYTES | 本地磁盘上限 | file | 10737418240 (10GB) |
+| SEAWEEDFS_MAX_BYTES | SeaweedFS 上限 | file | 53687091200 (50GB) |
+| SEAWEEDFS_THRESHOLD_PCT | 淘汰阈值% | file | 80 |
 | KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
 | KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
-| KAFKA_TRANSFER_TOPIC | 转存 topic | file-worker | file-transfer |
+| KAFKA_CLOUD_MIGRATE_TOPIC | 冷迁移 topic | file-worker | cloud-migrate |
 | KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
 | FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
 | FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
-| DOWNLOAD_URL_PREFIX | 下载 URL 前缀 | file | http://localhost:8080/downloads |
 
 ## 关键设计决策
 
@@ -357,12 +372,15 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 6. **Monorepo 结构**: 后端留在根目录（避免破坏 Go module 路径），前端位于 `frontend/` 目录。
 7. **vendor 离线构建**: `go mod vendor` 将全部依赖源码镜像到仓库，Dockerfile 使用 `-mod=vendor` 实现零网络构建，确保 CI 和本地构建行为一致。
 8. **统一 Dockerfile**: 用单个 `Dockerfile` + `SERVICE` 构建参数替代多个 Dockerfile，worker 的构建路径为 `./app/file/cmd/worker`，其余为 `./app/${SERVICE}/cmd`。
+9. **三级存储 (本地→SeaweedFS→OSS)**: 分块在本地磁盘 collect，合并后上传 SeaweedFS (S3 API)，SeaweedFS 超阈值后 LRU 淘汰到阿里云 OSS。成本与性能平衡：热数据就近访问，冷数据低成本归档。
+10. **ObjectStorage/CloudStorage 接口分离**: biz 层定义两个独立接口，data 层分别用 aws-sdk-go-v2 (SeaweedFS) 和 alibabacloud-oss-go-sdk-v2 (OSS) 实现，均有 noop 降级。
+11. **Redis 用量计数器**: `disk_usage:local` 和 `disk_usage:seaweedfs` 用 INCRBY 原子操作追踪，避免每次查 DB 聚合。
 
 ## 容器化
 
 - 统一 `Dockerfile`：多阶段构建 (golang:1.25-alpine → alpine:3.21)，通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
 - 前端独立 `frontend/Dockerfile`：多阶段 (node:24-alpine → nginx:1.27-alpine)
-- `docker-compose.yml` 编排 9 个服务：frontend / gateway / user-service / file-service / file-worker / consul / mysql / redis / kafka
+- `docker-compose.yml` 编排 10 个服务：frontend / gateway / user-service / file-service / file-worker / consul / mysql / redis / kafka / seaweedfs
 
 ## CI/CD
 
@@ -371,12 +389,16 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 ## 最近更新（2026-03）
 
-- 合并 `Dockerfile.worker` 到统一 `Dockerfile`，通过 `SERVICE=worker` 参数区分
-- 清理根目录误提交的二进制产物 (`cmd`、`worker`、`bin/*`)，更新 `.gitignore`
-- 前端镜像改为多阶段自构建（Node 构建 + Nginx 运行），不依赖宿主机 `dist/`
-- `docker-compose.yml` 继续保持全栈容器编排，并固定 Kafka 镜像版本到 `apache/kafka:3.6.2`
-- GitHub Actions `ci.yml` 新增 Compose 冒烟测试，验证容器启动与关键连通性后再执行镜像推送
-- 文件上传链路补全为"分块落盘 + 合并落盘 + 存储表记录 + 下载 URL 返回"，并通过 Gateway `/downloads` 暴露只读下载路径
+- **三级存储架构**: 本地磁盘 → SeaweedFS → 阿里云 OSS + LRU 自动冷迁移
+- 新增 `data/seaweedfs.go` (aws-sdk-go-v2 S3 客户端) 和 `data/oss.go` (alibabacloud-oss-go-sdk-v2)
+- Kafka topic 从 `file-transfer` 改为 `cloud-migrate`，消息格式 `CloudMigrateMessage` 带 `file_store_id` / `size`
+- file-worker 完整实现 `handleCloudMigrateMessage`: SeaweedFS→OSS 搬迁 + DB/Redis 状态维护
+- `biz/file.go` 新增 `ObjectStorage`/`CloudStorage` 接口、`StorageConfig` 配置、`maybeEvictToCloud()` 淘汰、`GetDiskUsage()`
+- `data/file.go` 新增 `FileStorePO.StorageType`/`LastAccessedAt` 字段、`FindLRUStores`/`SumSizeByStorageType`/`GetDiskUsage`/`IncrDiskUsage` 方法
+- `file.proto` 新增 `GetDiskUsage` RPC、`CheckUploadReply.disk_full` 字段
+- Gateway 新增 `GetDiskUsage` handler、`CheckUpload` 503 磁盘满处理
+- Docker Compose 新增 SeaweedFS 服务 (`chrislusf/seaweedfs:latest`)
+- 单元测试增至 71 个 (biz 33 + handler 15 + middleware 9 + user/biz 14)
 
 ## 前端架构
 

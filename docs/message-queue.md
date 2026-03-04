@@ -2,14 +2,15 @@
 
 ## 概述
 
-本项目使用 Kafka 消息队列实现文件上传后的异步处理，包括 OSS 转存和缩略图生成。采用 `segmentio/kafka-go` 作为 Go 客户端，遵循 Clean Architecture 在 biz 层定义 `MessageProducer` 接口，data 层实现 Kafka 生产者，独立 Worker 进程消费消息。
+本项目使用 Kafka 消息队列实现文件上传后的异步处理，包括 **SeaweedFS → OSS 冷迁移**和缩略图生成。采用 `segmentio/kafka-go` 作为 Go 客户端，遵循 Clean Architecture 在 biz 层定义 `MessageProducer` 接口，data 层实现 Kafka 生产者，独立 Worker 进程消费消息。
 
 ## 架构
 
 ```
 MergeChunks (File Service)
     │
-    ├── SendTransferMessage ──→ Kafka [file-transfer] ──→ TransferWorker (OSS 转存)
+    ├── maybeEvictToCloud() ──→ Kafka [cloud-migrate] ──→ file-worker (SeaweedFS→OSS 迁移)
+    │   (SeaweedFS 用量超阈值时触发)
     │
     └── SendThumbnailMessage ─→ Kafka [file-thumbnail] ─→ ThumbnailWorker (缩略图)
          (仅媒体文件)
@@ -19,20 +20,22 @@ MergeChunks (File Service)
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| `file-transfer` | File Service | file-worker (TransferWorker) | 文件异步转存 OSS |
+| `cloud-migrate` | File Service (LRU 淘汰) | file-worker | SeaweedFS → 阿里云 OSS 冷迁移 |
 | `file-thumbnail` | File Service | file-worker (ThumbnailWorker) | 生成文件缩略图 |
 
 ## 消息格式
 
-### TransferMessage
+### CloudMigrateMessage
 
-文件合并完成后始终发送，用于将本地文件异步转存至 OSS。
+当 SeaweedFS 用量超过阈值（默认 80%）时，`maybeEvictToCloud()` 选出 LRU 候选文件后发送。
 
 ```json
 {
+  "file_store_id": 42,
   "file_md5": "abc123...",
-  "cur_location": "/store/abc123/file.zip",
-  "dest_location": "oss://bucket/abc123/file.zip"
+  "cur_location": "abc123/file.zip",
+  "dest_location": "oss://abc123/file.zip",
+  "size": 10485760
 }
 ```
 
@@ -43,7 +46,7 @@ MergeChunks (File Service)
 ```json
 {
   "file_id": 123,
-  "file_path": "/store/abc123/image.jpg",
+  "file_path": "abc123/image.jpg",
   "file_type": "image/jpeg"
 }
 ```
@@ -56,22 +59,22 @@ MergeChunks (File Service)
 
 | 文件 | 职责 |
 |------|------|
-| `app/file/internal/biz/file.go` | 定义 `MessageProducer` 接口、`TransferMessage`/`ThumbnailMessage` 结构体 |
-| `app/file/internal/data/kafka.go` | 实现 `kafkaProducer`（使用 kafka-go Writer），以及无 Kafka 时的 `noopProducer` |
-| `app/file/internal/conf/conf.proto` | `Data.Kafka` 配置（brokers, transfer_topic, thumbnail_topic） |
+| `app/file/internal/biz/file.go` | 定义 `MessageProducer` 接口、`CloudMigrateMessage`/`ThumbnailMessage` 结构体、`maybeEvictToCloud()` 淘汰逻辑 |
+| `app/file/internal/data/kafka.go` | 实现 `kafkaProducer`（cloud-migrate + file-thumbnail 两个 Writer），以及无 Kafka 时的 `noopProducer` |
+| `app/file/internal/conf/conf.proto` | `Data.Kafka` 配置（brokers, cloud_migrate_topic, thumbnail_topic） |
 
 ### 消费端 (Worker)
 
 | 文件 | 职责 |
 |------|------|
-| `app/file/cmd/worker/main.go` | 独立进程，使用 kafka-go Reader（ConsumerGroup 模式）消费两个 topic |
+| `app/file/cmd/worker/main.go` | 独立进程，使用 kafka-go Reader（ConsumerGroup 模式）消费两个 topic。`handleCloudMigrateMessage` 执行 SeaweedFS→OSS 数据搬迁 + DB/Redis 状态更新 |
 
 ### 接口定义
 
 ```go
 // biz/file.go
 type MessageProducer interface {
-    SendTransferMessage(ctx context.Context, msg *TransferMessage) error
+    SendCloudMigrateMessage(ctx context.Context, msg *CloudMigrateMessage) error
     SendThumbnailMessage(ctx context.Context, msg *ThumbnailMessage) error
     Close() error
 }
@@ -79,11 +82,22 @@ type MessageProducer interface {
 
 ### 集成位置
 
-在 `FileUsecase.MergeChunks()` 中，文件创建成功后：
+在 `FileUsecase.MergeChunks()` 中，文件上传 SeaweedFS 成功后：
 
-1. **始终**发送 `TransferMessage`（本地路径 → OSS 目标路径）
+1. 异步调用 `maybeEvictToCloud()`：若 SeaweedFS 用量超阈值，查找 LRU 候选并发送 `CloudMigrateMessage`
 2. 判断文件扩展名，若为媒体文件则发送 `ThumbnailMessage`
 3. 发送失败仅 warn 日志，**不影响主流程**（fire-and-forget）
+
+### file-worker 迁移流程
+
+```
+handleCloudMigrateMessage:
+  1. SeaweedFS.Get(key) → 下载文件数据
+  2. OSS.Put(destKey, data) → 上传到阿里云 OSS
+  3. UPDATE file_store SET storage_type='oss', location=destLocation
+  4. SeaweedFS.Delete(key) → 释放 SeaweedFS 空间
+  5. Redis INCRBY disk_usage:seaweedfs -(size) → 递减用量计数器
+```
 
 ## 配置
 
@@ -93,7 +107,7 @@ type MessageProducer interface {
 message Data {
   message Kafka {
     repeated string brokers = 1;
-    string transfer_topic = 2;
+    string cloud_migrate_topic = 2;
     string thumbnail_topic = 3;
   }
   Database database = 1;
@@ -109,7 +123,7 @@ data:
   kafka:
     brokers:
       - ${KAFKA_BROKERS:localhost:9092}
-    transfer_topic: file-transfer
+    cloud_migrate_topic: cloud-migrate
     thumbnail_topic: file-thumbnail
 ```
 
@@ -118,7 +132,7 @@ data:
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `KAFKA_BROKERS` | Kafka broker 地址（逗号分隔） | 无（降级为 noopProducer） |
-| `KAFKA_TRANSFER_TOPIC` | 转存 topic（Worker 端） | `file-transfer` |
+| `KAFKA_CLOUD_MIGRATE_TOPIC` | 云迁移 topic（Worker 端） | `cloud-migrate` |
 | `KAFKA_THUMBNAIL_TOPIC` | 缩略图 topic（Worker 端） | `file-thumbnail` |
 | `KAFKA_GROUP_ID` | 消费者组 ID | `file-worker-group` |
 
@@ -127,21 +141,22 @@ data:
 1. **生产端**: 同步 Write，`RequiredAcks = RequireAll`（等待所有副本确认）
 2. **消费端**: `FetchMessage` + 处理成功后 `CommitMessages`（手动 offset 提交）
 3. **降级策略**: 未配置 `KAFKA_BROKERS` 时自动使用 `noopProducer`，MQ 失败不阻塞主流程
-4. **消息 Key**: TransferMessage 用 `file_md5`，ThumbnailMessage 用 `file_id`，保证同文件消息路由到同分区
-5. **幂等处理**: 使用 `file_md5` / `file_id` 作为唯一键，消费端可据此去重
+4. **消息 Key**: CloudMigrateMessage 用 `file_md5`，ThumbnailMessage 用 `file_id`，保证同文件消息路由到同分区
+5. **幂等处理**: Worker 以 `file_store_id` + `storage_type` 判断是否已迁移，跳过重复消息
 
 ## 待实现
 
-- [ ] TransferWorker：实际 OSS 上传（读本地文件 → 上传 OSS → 更新 file_store 表）
+- [x] CloudMigrateWorker：SeaweedFS → OSS 异步迁移（完整实现）
 - [ ] ThumbnailWorker：图片缩放 / 视频截帧（需引入图片处理库）
 - [ ] 死信队列：消费失败 N 次后写入 `*-dlq` topic
-- [ ] 定时补偿扫描：兜底检查未转存的文件
+- [ ] 定时补偿扫描：兜底检查未迁移的文件
 
 ## Docker 部署
 
 ```yaml
 # docker-compose.yml 中已包含：
-# - kafka (KRaft 模式, apache/kafka:3.6.2)
+# - kafka (KRaft 模式, apache/kafka:3.7.0)
+# - seaweedfs (S3 兼容对象存储)
 # - file-worker (消费端, 独立容器)
 ```
 
@@ -149,9 +164,10 @@ Worker 依赖 Kafka 健康检查通过后启动，与 file-service 独立部署�
 
 ## 面试要点
 
-1. **为什么用 MQ？** — 异步解耦，上传完即返回，转存/缩略图后台处理，提高响应速度
+1. **为什么用 MQ？** — 异步解耦，上传完即返回，冷迁移/缩略图后台处理，提高响应速度
 2. **为什么选 Kafka？** — 高吞吐、持久化、消费者组实现水平扩展
 3. **消息丢失怎么办？** — acks=all + 手动 commit + 死信队列 + 定时补偿
-4. **消息重复怎么办？** — 幂等设计，用 file_md5/file_id 去重
+4. **消息重复怎么办？** — 幂等设计，Worker 检查 storage_type 是否已为 oss
 5. **Clean Architecture 如何集成？** — biz 层定义 `MessageProducer` 接口，data 层实现，Wire 注入，业务逻辑不依赖具体 MQ 实现
 6. **没有 Kafka 怎么办？** — `noopProducer` 降级，不影响核心上传流程
+7. **为什么从 file-transfer 改为 cloud-migrate？** — 语义更清晰，消息不再是"本地→OSS"的简单转存，而是三级存储间的"冷迁移"

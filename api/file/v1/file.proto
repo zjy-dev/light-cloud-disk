@@ -35,6 +35,8 @@ service FileService {
   rpc GetShare (GetShareRequest) returns (GetShareReply);
   // 搜索文件
   rpc SearchFiles (SearchFilesRequest) returns (SearchFilesReply);
+  // 获取磁盘用量
+  rpc GetDiskUsage (GetDiskUsageRequest) returns (GetDiskUsageReply);
 }
 
 // 秒传/断点续传检查
@@ -47,6 +49,7 @@ message CheckUploadRequest {
 message CheckUploadReply {
   bool can_fast_upload = 1;
   repeated int32 uploaded_chunks = 2;
+  bool disk_full = 3;
 }
 
 // 分块上传
@@ -235,4 +238,14 @@ message SearchFilesRequest {
 message SearchFilesReply {
   repeated FileInfo files = 1;
   int64 total = 2;
+}
+
+// 磁盘用量
+message GetDiskUsageRequest {}
+
+message GetDiskUsageReply {
+  int64 local_used_bytes = 1;
+  int64 local_max_bytes = 2;
+  int64 seaweedfs_used_bytes = 3;
+  int64 seaweedfs_max_bytes = 4;
 }
