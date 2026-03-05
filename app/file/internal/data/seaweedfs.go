@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,6 +24,7 @@ type seaweedFSClient struct {
 	presigner *s3.PresignClient
 	bucket    string
 	endpoint  string
+	anonymous bool
 	log       *log.Helper
 }
 
@@ -30,35 +32,53 @@ type seaweedFSClient struct {
 func NewSeaweedFSClient(c *conf.Storage, logger log.Logger) (biz.ObjectStorage, error) {
 	helper := log.NewHelper(logger)
 
-	if c == nil || c.Seaweedfs == nil || c.Seaweedfs.Endpoint == "" {
+	var endpoint string
+	if v := os.Getenv("SEAWEEDFS_ENDPOINT"); v != "" {
+		endpoint = v
+	} else if c != nil && c.Seaweedfs != nil {
+		endpoint = sanitizeConfValue(c.Seaweedfs.Endpoint)
+	}
+
+	if endpoint == "" {
 		helper.Warn("SeaweedFS is not configured. Falling back to no-op object storage.")
 		return &noopObjectStorage{}, nil
 	}
 
-	endpoint := c.Seaweedfs.Endpoint
-	region := c.Seaweedfs.Region
-	if region == "" {
-		region = "us-east-1"
+	region := "us-east-1"
+	if v := os.Getenv("SEAWEEDFS_REGION"); v != "" {
+		region = v
+	} else if c != nil && c.Seaweedfs != nil && c.Seaweedfs.Region != "" {
+		region = sanitizeConfValue(c.Seaweedfs.Region)
 	}
-	bucket := c.Seaweedfs.Bucket
-	if bucket == "" {
-		bucket = "light-cloud-disk"
+
+	bucket := "light-cloud-disk"
+	if v := os.Getenv("SEAWEEDFS_BUCKET"); v != "" {
+		bucket = v
+	} else if c != nil && c.Seaweedfs != nil && c.Seaweedfs.Bucket != "" {
+		bucket = sanitizeConfValue(c.Seaweedfs.Bucket)
 	}
 
 	accessKey := os.Getenv("SEAWEEDFS_ACCESS_KEY")
-	if accessKey == "" {
-		accessKey = c.Seaweedfs.AccessKey
+	if accessKey == "" && c != nil && c.Seaweedfs != nil {
+		accessKey = sanitizeConfValue(c.Seaweedfs.AccessKey)
 	}
 	secretKey := os.Getenv("SEAWEEDFS_SECRET_KEY")
-	if secretKey == "" {
-		secretKey = c.Seaweedfs.SecretKey
+	if secretKey == "" && c != nil && c.Seaweedfs != nil {
+		secretKey = sanitizeConfValue(c.Seaweedfs.SecretKey)
 	}
 
-	cfg := aws.Config{
-		Region: region,
-		Credentials: credentials.NewStaticCredentialsProvider(
-			accessKey, secretKey, "",
-		),
+	anonymous := strings.TrimSpace(accessKey) == "" && strings.TrimSpace(secretKey) == ""
+
+	region = strings.TrimSpace(region)
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	cfg := aws.Config{Region: region}
+	if anonymous {
+		cfg.Credentials = aws.AnonymousCredentials{}
+	} else {
+		cfg.Credentials = credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
 	}
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
@@ -82,6 +102,7 @@ func NewSeaweedFSClient(c *conf.Storage, logger log.Logger) (biz.ObjectStorage, 
 		presigner: s3.NewPresignClient(client),
 		bucket:    bucket,
 		endpoint:  endpoint,
+		anonymous: anonymous,
 		log:       helper,
 	}, nil
 }
@@ -116,6 +137,9 @@ func (s *seaweedFSClient) Get(ctx context.Context, key string) (io.ReadCloser, e
 }
 
 func (s *seaweedFSClient) PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error) {
+	if s.anonymous {
+		return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.endpoint, "/"), s.bucket, key), nil
+	}
 	req, err := s.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -138,6 +162,9 @@ func (s *seaweedFSClient) InitMultipartUpload(ctx context.Context, key string) (
 }
 
 func (s *seaweedFSClient) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error) {
+	if s.anonymous {
+		return fmt.Sprintf("%s/%s/%s?partNumber=%d&uploadId=%s", strings.TrimRight(s.endpoint, "/"), s.bucket, key, partNumber, uploadID), nil
+	}
 	req, err := s.presigner.PresignUploadPart(ctx, &s3.UploadPartInput{
 		Bucket:     aws.String(s.bucket),
 		Key:        aws.String(key),
@@ -148,6 +175,14 @@ func (s *seaweedFSClient) PresignUploadPart(ctx context.Context, key, uploadID s
 		return "", err
 	}
 	return req.URL, nil
+}
+
+func sanitizeConfValue(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+		return ""
+	}
+	return v
 }
 
 func (s *seaweedFSClient) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []biz.CompletedPart) error {
@@ -182,24 +217,27 @@ func (s *seaweedFSClient) AbortMultipartUpload(ctx context.Context, key, uploadI
 type noopObjectStorage struct{}
 
 func (n *noopObjectStorage) Put(_ context.Context, _ string, _ io.Reader, _ int64) error {
-	return nil
+	return fmt.Errorf("noop object storage: not configured")
 }
-func (n *noopObjectStorage) Delete(_ context.Context, _ string) error { return nil }
+func (n *noopObjectStorage) Delete(_ context.Context, _ string) error {
+	return fmt.Errorf("noop object storage: not configured")
+}
 func (n *noopObjectStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
-	return key, nil
+	_ = key
+	return "", fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) InitMultipartUpload(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return "", fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) PresignUploadPart(_ context.Context, _, _ string, _ int32, _ time.Duration) (string, error) {
-	return "", nil
+	return "", fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) CompleteMultipartUpload(_ context.Context, _, _ string, _ []biz.CompletedPart) error {
-	return nil
+	return fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) AbortMultipartUpload(_ context.Context, _, _ string) error {
-	return nil
+	return fmt.Errorf("noop object storage: not configured")
 }

@@ -95,8 +95,9 @@
 CheckUpload → SaveChunk → MergeChunks
 ```
 
-- `CheckUpload`: 检查秒传 + 断点续传 + **本地磁盘是否已满**
-  - 返回 `disk_full=true` 时，Gateway 回复 503
+- `CheckUpload`: 检查秒传 + 断点续传 + **自动模式选择**
+  - 返回 `upload_mode="presigned"` 时，前端走预签名直传
+  - 返回 `upload_mode="direct"` 时，走传统分块上传
 - `SaveChunk`: 分块写入本地 `FILE_TMP_DIR`，`IncrDiskUsage("local", chunkSize)`
 - `MergeChunks`: 合并分块 → 上传 SeaweedFS → 清理本地文件
 

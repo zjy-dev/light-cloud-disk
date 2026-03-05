@@ -2,7 +2,9 @@ package biz
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"os"
@@ -24,13 +26,17 @@ const (
 )
 
 var (
-	ErrFileNotFound    = errors.New("file not found")
-	ErrFolderNotFound  = errors.New("folder not found")
-	ErrShareNotFound   = errors.New("share not found")
-	ErrShareExpired    = errors.New("share expired")
-	ErrInvalidPassword = errors.New("invalid share password")
-	ErrStorageExceeded = errors.New("storage limit exceeded")
-	ErrDiskFull        = errors.New("local disk full, please retry later")
+	ErrFileNotFound     = errors.New("file not found")
+	ErrFolderNotFound   = errors.New("folder not found")
+	ErrShareNotFound    = errors.New("share not found")
+	ErrShareExpired     = errors.New("share expired")
+	ErrInvalidPassword  = errors.New("invalid share password")
+	ErrStorageExceeded  = errors.New("storage limit exceeded")
+	ErrDiskFull         = errors.New("local disk full, please retry later")
+	ErrSessionNotFound  = errors.New("upload session not found")
+	ErrSessionCompleted = errors.New("upload session already completed")
+	ErrIncompleteUpload = errors.New("not all parts uploaded yet")
+	ErrUnauthorized     = errors.New("not authorized to access this session")
 )
 
 type File struct {
@@ -74,6 +80,33 @@ type ChunkInfo struct {
 	ChunkIndex int32
 	ChunkSize  int64
 	Uploaded   bool
+}
+
+// UploadSession persists a presigned multipart upload session for cross-device resume.
+type UploadSession struct {
+	ID            string // UUID
+	UserID        int64
+	ParentID      int64
+	FileName      string
+	FileMD5       string
+	FileSize      int64
+	TotalParts    int32
+	PartSize      int64  // bytes per part (last may be smaller)
+	StorageTarget string // "seaweedfs" or "oss"
+	ObjectKey     string // S3/OSS key
+	S3UploadID    string // from InitMultipartUpload
+	Status        string // "uploading", "completed", "aborted"
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+// UploadedPart records a successfully uploaded part within a session.
+type UploadedPart struct {
+	SessionID  string
+	PartNumber int32
+	ETag       string
+	Size       int64
+	UploadedAt time.Time
 }
 
 // StorageConfig holds storage tier configuration from conf.proto.
@@ -124,6 +157,15 @@ type FileRepo interface {
 	// Disk usage operations (Redis atomic counters)
 	GetDiskUsage(ctx context.Context, diskType string) (int64, error)
 	IncrDiskUsage(ctx context.Context, diskType string, delta int64) error
+
+	// Upload session operations (for presigned multipart uploads)
+	CreateUploadSession(ctx context.Context, session *UploadSession) error
+	FindUploadSession(ctx context.Context, userID int64, fileMD5 string) (*UploadSession, error)
+	FindUploadSessionByID(ctx context.Context, sessionID string) (*UploadSession, error)
+	UpdateUploadSessionStatus(ctx context.Context, sessionID, status string) error
+	SaveUploadPart(ctx context.Context, sessionID string, partNumber int32, etag string, size int64) error
+	FindUploadedParts(ctx context.Context, sessionID string) ([]UploadedPart, error)
+	DeleteUploadSession(ctx context.Context, sessionID string) error
 }
 
 // UserClient is the cross-service gRPC interface for user operations
@@ -229,25 +271,34 @@ func (uc *FileUsecase) primaryDiskType() string {
 }
 
 // CheckUpload verifies instant/resumable upload and primary-storage disk availability.
-func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, error) {
+// Returns: canFastUpload, uploadedChunks, diskFull, uploadMode, error
+// uploadMode is "direct" (chunks through backend) or "presigned" (client uploads to S3/OSS directly).
+func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, string, error) {
 	// 1) Check instant upload by MD5 deduplication
 	store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
 	if err == nil && store != nil {
-		return true, nil, false, nil // instant-upload hit
+		return true, nil, false, "direct", nil // instant-upload hit
 	}
 
-	// 2) Check primary storage availability
+	// 2) Determine upload mode
+	// Mode B (s3): always presigned (data goes directly to SeaweedFS/OSS, not through backend)
+	if uc.storageCfg.Mode == ModeS3 {
+		return false, nil, false, "presigned", nil
+	}
+
+	// Mode A (local): check primary disk availability
 	used, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
 	if used+fileSize > uc.storageCfg.PrimaryMaxBytes {
-		return false, nil, true, nil // primary storage full
+		// Disk full → switch to presigned OSS upload
+		return false, nil, true, "presigned", nil
 	}
 
-	// 3) Return uploaded chunks for resumable upload
+	// 3) Return uploaded chunks for resumable direct upload
 	uploadedChunks, err := uc.repo.GetUploadedChunks(ctx, fileMD5)
 	if err != nil {
-		return false, nil, false, err
+		return false, nil, false, "direct", err
 	}
-	return false, uploadedChunks, false, nil
+	return false, uploadedChunks, false, "direct", nil
 }
 
 // SaveChunk writes a single chunk to local temp storage
@@ -378,7 +429,11 @@ func (uc *FileUsecase) uploadMergedFile(ctx context.Context, mergedPath, objectK
 				if err := uc.objStore.Put(ctx, objectKey, localFile, fileSize); err == nil {
 					_ = uc.repo.IncrDiskUsage(ctx, "seaweedfs", fileSize)
 					return StorageSeaweedFS, storePath
+				} else {
+					uc.log.Warnf("SeaweedFS upload failed for %s, fallback to OSS: %v", objectKey, err)
 				}
+			} else {
+				uc.log.Warnf("Open merged file failed for %s: %v", objectKey, err)
 			}
 		}
 		// Fallback to OSS
@@ -438,6 +493,306 @@ func (uc *FileUsecase) copyFile(src, dst string) {
 	if _, err := io.Copy(out, in); err != nil {
 		uc.log.Errorf("copyFile: copy %s -> %s: %v", src, dst, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Presigned Multipart Upload
+// ---------------------------------------------------------------------------
+
+const (
+	defaultPartSize     int64 = 5 * 1024 * 1024 // 5 MB
+	presignedURLExpiry        = 2 * time.Hour
+	uploadSessionExpiry       = 24 * time.Hour
+)
+
+// PresignedUploadResult holds the response for InitPresignedUpload.
+type PresignedUploadResult struct {
+	SessionID      string
+	PendingParts   []PresignedPart
+	CompletedParts []UploadedPart
+	StorageTarget  string
+	PartSize       int64
+	CanFastUpload  bool
+	File           *File // non-nil only when CanFastUpload=true
+}
+
+// PresignedPart carries a part number and its presigned upload URL.
+type PresignedPart struct {
+	PartNumber int32
+	UploadURL  string
+}
+
+// InitPresignedUpload creates (or resumes) a presigned multipart upload session.
+func (uc *FileUsecase) InitPresignedUpload(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalParts int32) (*PresignedUploadResult, error) {
+	// 1) Fast-upload dedup check
+	store, _ := uc.repo.FindStoreByMD5(ctx, fileMD5)
+	if store != nil {
+		// Reuse existing storage, create a files record referencing it
+		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
+			return nil, err
+		}
+		file := &File{
+			UserID: userID, ParentID: parentID, Name: fileName,
+			FileMD5: fileMD5, Size: fileSize, IsFolder: false,
+			Path: store.StorePath,
+		}
+		createdFile, err := uc.repo.Create(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
+			uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
+		}
+		return &PresignedUploadResult{CanFastUpload: true, File: createdFile}, nil
+	}
+
+	// 2) Try to resume an existing session
+	session, _ := uc.repo.FindUploadSession(ctx, userID, fileMD5)
+	if session != nil && session.ExpiresAt.After(time.Now()) {
+		// Session alive → refresh presigned URLs for pending parts
+		completedParts, _ := uc.repo.FindUploadedParts(ctx, session.ID)
+		completedSet := make(map[int32]bool, len(completedParts))
+		for _, p := range completedParts {
+			completedSet[p.PartNumber] = true
+		}
+		pendingParts, err := uc.generatePresignedURLs(ctx, session, completedSet)
+		if err != nil {
+			return nil, err
+		}
+		return &PresignedUploadResult{
+			SessionID:      session.ID,
+			PendingParts:   pendingParts,
+			CompletedParts: completedParts,
+			StorageTarget:  session.StorageTarget,
+			PartSize:       session.PartSize,
+		}, nil
+	}
+
+	// Abort stale session if exists
+	if session != nil {
+		uc.abortS3Upload(ctx, session)
+		_ = uc.repo.DeleteUploadSession(ctx, session.ID)
+	}
+
+	// 3) New session: choose storage target
+	storageTarget := uc.choosePresignedTarget(ctx, fileSize)
+
+	ext := filepath.Ext(fileName)
+	if ext == "" {
+		ext = ".bin"
+	}
+	objectKey := fileMD5 + ext
+
+	// Init S3 multipart upload
+	var s3UploadID string
+	var initErr error
+	if storageTarget == StorageSeaweedFS {
+		s3UploadID, initErr = uc.objStore.InitMultipartUpload(ctx, objectKey)
+	} else {
+		s3UploadID, initErr = uc.cloudStore.InitMultipartUpload(ctx, objectKey)
+	}
+	if initErr != nil {
+		return nil, fmt.Errorf("init multipart upload: %w", initErr)
+	}
+
+	partSize := defaultPartSize
+	// Server computes totalParts from fileSize, ignoring client-supplied value
+	computedParts := int32((fileSize + partSize - 1) / partSize)
+	sessionID := generateUUID()
+	newSession := &UploadSession{
+		ID:            sessionID,
+		UserID:        userID,
+		ParentID:      parentID,
+		FileName:      fileName,
+		FileMD5:       fileMD5,
+		FileSize:      fileSize,
+		TotalParts:    computedParts,
+		PartSize:      partSize,
+		StorageTarget: storageTarget,
+		ObjectKey:     objectKey,
+		S3UploadID:    s3UploadID,
+		Status:        "uploading",
+		ExpiresAt:     time.Now().Add(uploadSessionExpiry),
+	}
+	if err := uc.repo.CreateUploadSession(ctx, newSession); err != nil {
+		return nil, err
+	}
+
+	pendingParts, err := uc.generatePresignedURLs(ctx, newSession, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PresignedUploadResult{
+		SessionID:     sessionID,
+		PendingParts:  pendingParts,
+		StorageTarget: storageTarget,
+		PartSize:      partSize,
+	}, nil
+}
+
+// ReportUploadedPart records that the client has finished uploading one part.
+func (uc *FileUsecase) ReportUploadedPart(ctx context.Context, userID int64, sessionID string, partNumber int32, etag string, size int64) error {
+	session, err := uc.repo.FindUploadSessionByID(ctx, sessionID)
+	if err != nil {
+		return ErrSessionNotFound
+	}
+	if session.UserID != userID {
+		return ErrUnauthorized
+	}
+	if session.Status != "uploading" {
+		return ErrSessionCompleted
+	}
+	return uc.repo.SaveUploadPart(ctx, sessionID, partNumber, etag, size)
+}
+
+// CompletePresignedUpload finishes the multipart upload and creates file records.
+func (uc *FileUsecase) CompletePresignedUpload(ctx context.Context, userID int64, sessionID string) (*File, error) {
+	session, err := uc.repo.FindUploadSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, ErrSessionNotFound
+	}
+	if session.UserID != userID {
+		return nil, ErrUnauthorized
+	}
+	if session.Status != "uploading" {
+		return nil, ErrSessionCompleted
+	}
+
+	parts, err := uc.repo.FindUploadedParts(ctx, session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if int32(len(parts)) < session.TotalParts {
+		return nil, ErrIncompleteUpload
+	}
+
+	// Build completed parts list for S3
+	s3Parts := make([]CompletedPart, len(parts))
+	for i, p := range parts {
+		s3Parts[i] = CompletedPart{PartNumber: p.PartNumber, ETag: p.ETag}
+	}
+
+	// Complete multipart upload on the storage backend
+	if session.StorageTarget == StorageSeaweedFS {
+		err = uc.objStore.CompleteMultipartUpload(ctx, session.ObjectKey, session.S3UploadID, s3Parts)
+	} else {
+		err = uc.cloudStore.CompleteMultipartUpload(ctx, session.ObjectKey, session.S3UploadID, s3Parts)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("complete multipart upload: %w", err)
+	}
+
+	// Create file_stores record
+	if createErr := uc.repo.CreateStore(ctx, &FileStore{
+		FileMD5:     session.FileMD5,
+		Size:        session.FileSize,
+		StorePath:   session.ObjectKey,
+		StorageType: session.StorageTarget,
+		RefCount:    1,
+	}); createErr != nil {
+		return nil, createErr
+	}
+
+	// Create files record
+	file := &File{
+		UserID: session.UserID, ParentID: session.ParentID, Name: session.FileName,
+		FileMD5: session.FileMD5, Size: session.FileSize, IsFolder: false,
+		Path: session.ObjectKey,
+	}
+	createdFile, err := uc.repo.Create(ctx, file)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mark session completed
+	_ = uc.repo.UpdateUploadSessionStatus(ctx, session.ID, "completed")
+
+	// Update user storage quota
+	if err := uc.userClient.UpdateStorageUsed(ctx, session.UserID, session.FileSize); err != nil {
+		uc.log.Warnf("Could not update storage usage for user %d: %v", session.UserID, err)
+	}
+
+	// Update disk usage counter
+	_ = uc.repo.IncrDiskUsage(ctx, session.StorageTarget, session.FileSize)
+
+	// Check eviction threshold
+	primUsed, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+	uc.maybeEvictToCloud(ctx, primUsed)
+
+	return createdFile, nil
+}
+
+// AbortPresignedUpload cancels the multipart upload and cleans up the session.
+func (uc *FileUsecase) AbortPresignedUpload(ctx context.Context, userID int64, sessionID string) error {
+	session, err := uc.repo.FindUploadSessionByID(ctx, sessionID)
+	if err != nil {
+		return ErrSessionNotFound
+	}
+	if session.UserID != userID {
+		return ErrUnauthorized
+	}
+	if session.Status != "uploading" {
+		return nil // already completed or aborted
+	}
+	uc.abortS3Upload(ctx, session)
+	_ = uc.repo.UpdateUploadSessionStatus(ctx, session.ID, "aborted")
+	return nil
+}
+
+// choosePresignedTarget decides which storage backend to use for presigned uploads.
+func (uc *FileUsecase) choosePresignedTarget(ctx context.Context, fileSize int64) string {
+	if uc.storageCfg.Mode == ModeS3 {
+		// Mode B: SeaweedFS is primary, fallback to OSS if full
+		used, _ := uc.repo.GetDiskUsage(ctx, "seaweedfs")
+		if used+fileSize <= uc.storageCfg.PrimaryMaxBytes {
+			return StorageSeaweedFS
+		}
+		return StorageOSS
+	}
+	// Mode A: local disk is primary, presigned goes to OSS
+	return StorageOSS
+}
+
+// generatePresignedURLs creates presigned upload URLs for parts not in completedSet.
+func (uc *FileUsecase) generatePresignedURLs(ctx context.Context, session *UploadSession, completedSet map[int32]bool) ([]PresignedPart, error) {
+	var pending []PresignedPart
+	for i := int32(1); i <= session.TotalParts; i++ {
+		if completedSet[i] {
+			continue
+		}
+		var url string
+		var err error
+		if session.StorageTarget == StorageSeaweedFS {
+			url, err = uc.objStore.PresignUploadPart(ctx, session.ObjectKey, session.S3UploadID, i, presignedURLExpiry)
+		} else {
+			url, err = uc.cloudStore.PresignUploadPart(ctx, session.ObjectKey, session.S3UploadID, i, presignedURLExpiry)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("presign part %d: %w", i, err)
+		}
+		pending = append(pending, PresignedPart{PartNumber: i, UploadURL: url})
+	}
+	return pending, nil
+}
+
+// abortS3Upload calls abort on the storage backend, logging errors.
+func (uc *FileUsecase) abortS3Upload(ctx context.Context, session *UploadSession) {
+	var err error
+	if session.StorageTarget == StorageSeaweedFS {
+		err = uc.objStore.AbortMultipartUpload(ctx, session.ObjectKey, session.S3UploadID)
+	} else {
+		err = uc.cloudStore.AbortMultipartUpload(ctx, session.ObjectKey, session.S3UploadID)
+	}
+	if err != nil {
+		uc.log.Warnf("Failed to abort multipart upload %s: %v", session.S3UploadID, err)
+	}
+}
+
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, _ = io.ReadFull(cryptorand.Reader, b)
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // maybeEvictToCloud triggers LRU cold migration when primary storage exceeds threshold.

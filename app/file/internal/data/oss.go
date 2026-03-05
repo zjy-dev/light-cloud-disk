@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
@@ -26,21 +27,29 @@ type ossClient struct {
 func NewOSSClient(c *conf.Storage, logger log.Logger) (biz.CloudStorage, error) {
 	helper := log.NewHelper(logger)
 
-	if c == nil || c.Oss == nil || c.Oss.Endpoint == "" {
+	endpoint := os.Getenv("OSS_ENDPOINT")
+	if endpoint == "" && c != nil && c.Oss != nil {
+		endpoint = sanitizeOSSConfValue(c.Oss.Endpoint)
+	}
+
+	if endpoint == "" {
 		helper.Warn("Alibaba Cloud OSS is not configured. Falling back to no-op cloud storage.")
 		return &noopCloudStorage{}, nil
 	}
 
 	accessKeyID := os.Getenv("OSS_ACCESS_KEY_ID")
 	if accessKeyID == "" {
-		accessKeyID = c.Oss.AccessKeyId
+		accessKeyID = sanitizeOSSConfValue(c.Oss.AccessKeyId)
 	}
 	accessKeySecret := os.Getenv("OSS_ACCESS_KEY_SECRET")
 	if accessKeySecret == "" {
-		accessKeySecret = c.Oss.AccessKeySecret
+		accessKeySecret = sanitizeOSSConfValue(c.Oss.AccessKeySecret)
 	}
 
-	region := c.Oss.Region
+	region := os.Getenv("OSS_REGION")
+	if region == "" && c != nil && c.Oss != nil {
+		region = sanitizeOSSConfValue(c.Oss.Region)
+	}
 	if region == "" {
 		region = "cn-hangzhou"
 	}
@@ -50,16 +59,19 @@ func NewOSSClient(c *conf.Storage, logger log.Logger) (biz.CloudStorage, error) 
 			accessKeyID, accessKeySecret,
 		)).
 		WithRegion(region).
-		WithEndpoint(c.Oss.Endpoint)
+		WithEndpoint(endpoint)
 
 	client := oss.NewClient(cfg)
 
-	bucket := c.Oss.Bucket
+	bucket := os.Getenv("OSS_BUCKET")
+	if bucket == "" && c != nil && c.Oss != nil {
+		bucket = sanitizeOSSConfValue(c.Oss.Bucket)
+	}
 	if bucket == "" {
 		bucket = "light-cloud-disk"
 	}
 
-	helper.Infof("Alibaba Cloud OSS client is ready. endpoint=%s bucket=%s", c.Oss.Endpoint, bucket)
+	helper.Infof("Alibaba Cloud OSS client is ready. endpoint=%s bucket=%s", endpoint, bucket)
 
 	return &ossClient{
 		client: client,
@@ -166,24 +178,35 @@ func (o *ossClient) AbortMultipartUpload(ctx context.Context, key, uploadID stri
 type noopCloudStorage struct{}
 
 func (n *noopCloudStorage) Put(_ context.Context, _ string, _ io.Reader, _ int64) error {
-	return nil
+	return fmt.Errorf("noop cloud storage: not configured")
 }
-func (n *noopCloudStorage) Delete(_ context.Context, _ string) error { return nil }
+func (n *noopCloudStorage) Delete(_ context.Context, _ string) error {
+	return fmt.Errorf("noop cloud storage: not configured")
+}
 func (n *noopCloudStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("noop cloud storage: not configured")
 }
 func (n *noopCloudStorage) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
-	return key, nil
+	_ = key
+	return "", fmt.Errorf("noop cloud storage: not configured")
 }
 func (n *noopCloudStorage) InitMultipartUpload(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return "", fmt.Errorf("noop cloud storage: not configured")
 }
 func (n *noopCloudStorage) PresignUploadPart(_ context.Context, _, _ string, _ int32, _ time.Duration) (string, error) {
-	return "", nil
+	return "", fmt.Errorf("noop cloud storage: not configured")
 }
 func (n *noopCloudStorage) CompleteMultipartUpload(_ context.Context, _, _ string, _ []biz.CompletedPart) error {
-	return nil
+	return fmt.Errorf("noop cloud storage: not configured")
+}
+
+func sanitizeOSSConfValue(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+		return ""
+	}
+	return v
 }
 func (n *noopCloudStorage) AbortMultipartUpload(_ context.Context, _, _ string) error {
-	return nil
+	return fmt.Errorf("noop cloud storage: not configured")
 }

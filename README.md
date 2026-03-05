@@ -121,12 +121,14 @@
 - [x] 分块上传 (大文件支持，5MB/块)
 - [x] 秒传 (基于 MD5 去重)
 - [x] 断点续传 (Redis 记录上传状态)
+- [x] 预签名分块上传 (客户端直传 SeaweedFS/OSS，支持跨设备断点续传)
+- [x] 双模式上传 (direct: 经后端 / presigned: 客户端直传，自动切换)
 - [x] 双模式存储 (Mode A: 本地磁盘主存 / Mode B: SeaweedFS 主存)
 - [x] LRU 自动冷迁移 (主存超阈值 → MQ → 迁入 OSS)
 - [x] 可插拔数据库 (MySQL / SQLite via DB_DRIVER)
 - [x] 可插拔消息队列 (Kafka / 进程内 goroutine channel)
 - [x] 本地文件流式下载 (StreamFileContent server-streaming RPC)
-- [x] 磁盘满保护 (CheckUpload 返回 disk_full → 503)
+- [x] 磁盘满保护 (CheckUpload 检测 → 自动切换预签名上传)
 - [x] 磁盘用量查询 (GetDiskUsage API)
 - [x] 文件夹管理 (树形结构)
 - [x] 文件搜索 (模糊匹配)
@@ -141,6 +143,8 @@
 - [x] 请求日志中间件
 - [x] gRPC 代理 (HTTP → gRPC 协议转换)
 - [x] Consul 服务发现 (自动发现后端服务)
+- [x] MD5 一致性哈希路由 (上传请求按文件 MD5 路由到固定 File Service 实例)
+- [x] 预签名上传代理 (4 个端点: init / report-part / complete / abort)
 
 ## 项目结构
 
@@ -411,6 +415,7 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - [三级存储架构](docs/three-tier-storage.md)
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
+- [预签名分块上传](docs/presigned-upload.md)
 - [服务发现与通信](docs/service-discovery.md)
 - [消息队列集成](docs/message-queue.md)
 - [CI/CD 配置](docs/ci-cd.md)
@@ -420,6 +425,9 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 ## 更新日志
 
 ### v6.0.0 (2026)
+- **预签名分块上传**: 客户端直传 SeaweedFS/OSS，支持跨设备断点续传 (4 个新 RPC)
+- **MD5 一致性哈希路由**: FNV32a + 150 虚拟节点，上传请求按文件 MD5 路由到固定 File Service 实例
+- **双模式上传**: CheckUpload 自动选择 direct/presigned 模式，前端透明切换
 - **双模式存储架构**: Mode A (轻量: SQLite + 本地磁盘 + goroutine MQ) / Mode B (完整: MySQL + SeaweedFS + Kafka)
 - 可插拔数据库: MySQL / SQLite (DB_DRIVER 环境变量切换)
 - 可插拔消息队列: Kafka / 进程内 goroutine channel (自动根据 KAFKA_BROKERS 选择)
@@ -428,12 +436,13 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - 统一存储配置: STORAGE_MODE + PRIMARY_MAX_BYTES 控制主存行为
 - Dockerfile CGO 支持 (gcc + musl-dev) 以编译 SQLite
 - 前端双模式下载: local:// URL 自动走 blob 流式下载
-- 88 个后端单元测试 + 50 个前端测试
+- 98 个后端单元测试 + 50 个前端测试
+- **安全加固**: presigned 操作 user_id 鉴权、服务端独立计算 totalParts、hashRouter 连接泄漏修复、事务原子删除、前端失败自动 abort
 
 ### v5.0.0 (2026)
 - **三级存储架构**: 本地磁盘(分块暂存) → SeaweedFS(温数据) → 阿里云 OSS(冷数据)
 - LRU 自动冷迁移: SeaweedFS 超阈值 → Kafka cloud-migrate → file-worker 异步搬迁到 OSS
-- 磁盘满保护: CheckUpload 返回 disk_full → Gateway 503
+- 磁盘满保护: CheckUpload 检测 → 自动切换预签名上传
 - 磁盘用量查询 API (GetDiskUsage)
 - 下载链接按 StorageType 路由 (SeaweedFS/OSS 预签名 URL)
 - SeaweedFS (aws-sdk-go-v2/s3) + 阿里云 OSS (alibabacloud-oss-go-sdk-v2) 集成

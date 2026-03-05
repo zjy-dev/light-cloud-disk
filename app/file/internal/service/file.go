@@ -26,7 +26,7 @@ func NewFileService(uc *biz.FileUsecase, logger log.Logger) *FileService {
 }
 
 func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadRequest) (*pb.CheckUploadReply, error) {
-	canFastUpload, uploadedChunks, diskFull, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
+	canFastUpload, uploadedChunks, diskFull, uploadMode, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
 	if err != nil {
 		return nil, err
 	}
@@ -34,6 +34,7 @@ func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadReques
 		CanFastUpload:  canFastUpload,
 		UploadedChunks: uploadedChunks,
 		DiskFull:       diskFull,
+		UploadMode:     uploadMode,
 	}, nil
 }
 
@@ -273,4 +274,66 @@ func (s *FileService) fileToProto(f *biz.File) *pb.FileInfo {
 		CreatedAt: f.CreatedAt.Unix(),
 		UpdatedAt: f.UpdatedAt.Unix(),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Presigned Multipart Upload RPCs
+// ---------------------------------------------------------------------------
+
+func (s *FileService) InitPresignedUpload(ctx context.Context, req *pb.InitPresignedUploadRequest) (*pb.InitPresignedUploadReply, error) {
+	result, err := s.uc.InitPresignedUpload(ctx, req.UserId, req.ParentId, req.FileName, req.FileMd5, req.FileSize, req.TotalParts)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := &pb.InitPresignedUploadReply{
+		SessionId:     result.SessionID,
+		StorageTarget: result.StorageTarget,
+		PartSize:      result.PartSize,
+		CanFastUpload: result.CanFastUpload,
+	}
+
+	if result.File != nil {
+		reply.File = s.fileToProto(result.File)
+	}
+
+	for _, p := range result.PendingParts {
+		reply.PendingParts = append(reply.PendingParts, &pb.PresignedPartInfo{
+			PartNumber: p.PartNumber,
+			UploadUrl:  p.UploadURL,
+		})
+	}
+	for _, p := range result.CompletedParts {
+		reply.CompletedParts = append(reply.CompletedParts, &pb.UploadedPartInfo{
+			PartNumber: p.PartNumber,
+			Etag:       p.ETag,
+		})
+	}
+
+	return reply, nil
+}
+
+func (s *FileService) ReportUploadedPart(ctx context.Context, req *pb.ReportUploadedPartRequest) (*pb.ReportUploadedPartReply, error) {
+	if err := s.uc.ReportUploadedPart(ctx, req.UserId, req.SessionId, req.PartNumber, req.Etag, req.Size); err != nil {
+		return nil, err
+	}
+	return &pb.ReportUploadedPartReply{Success: true}, nil
+}
+
+func (s *FileService) CompletePresignedUpload(ctx context.Context, req *pb.CompletePresignedUploadRequest) (*pb.CompletePresignedUploadReply, error) {
+	file, err := s.uc.CompletePresignedUpload(ctx, req.UserId, req.SessionId)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.CompletePresignedUploadReply{
+		Success: true,
+		File:    s.fileToProto(file),
+	}, nil
+}
+
+func (s *FileService) AbortPresignedUpload(ctx context.Context, req *pb.AbortPresignedUploadRequest) (*pb.AbortPresignedUploadReply, error) {
+	if err := s.uc.AbortPresignedUpload(ctx, req.UserId, req.SessionId); err != nil {
+		return nil, err
+	}
+	return &pb.AbortPresignedUploadReply{Success: true}, nil
 }

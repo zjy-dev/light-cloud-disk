@@ -63,10 +63,17 @@ func main() {
 		auth.GET("/user/info", userHandler.GetUserInfo)
 		auth.PUT("/user/info", userHandler.UpdateUserInfo)
 
-		// File routes
+		// File routes — direct upload (Mode A default)
 		auth.POST("/file/check-upload", fileHandler.CheckUpload)
 		auth.POST("/file/upload-chunk", fileHandler.UploadChunk)
 		auth.POST("/file/merge-chunks", fileHandler.MergeChunks)
+
+		// File routes — presigned multipart upload (Mode B / disk-full fallback)
+		auth.POST("/file/presigned-upload", fileHandler.InitPresignedUpload)
+		auth.POST("/file/presigned-upload/part", fileHandler.ReportUploadedPart)
+		auth.POST("/file/presigned-upload/complete", fileHandler.CompletePresignedUpload)
+		auth.POST("/file/presigned-upload/abort", fileHandler.AbortPresignedUpload)
+
 		auth.GET("/files", fileHandler.ListFiles)
 		auth.POST("/file/folder", fileHandler.CreateFolder)
 		auth.PUT("/file/rename", fileHandler.RenameFile)

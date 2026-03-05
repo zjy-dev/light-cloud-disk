@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.1
 // - protoc             v7.34.0--rc2
-// source: file/v1/file.proto
+// source: api/file/v1/file.proto
 
 package v1
 
@@ -19,23 +19,27 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FileService_CheckUpload_FullMethodName       = "/api.file.v1.FileService/CheckUpload"
-	FileService_UploadChunk_FullMethodName       = "/api.file.v1.FileService/UploadChunk"
-	FileService_MergeChunks_FullMethodName       = "/api.file.v1.FileService/MergeChunks"
-	FileService_ListFiles_FullMethodName         = "/api.file.v1.FileService/ListFiles"
-	FileService_GetDownloadURL_FullMethodName    = "/api.file.v1.FileService/GetDownloadURL"
-	FileService_DeleteFile_FullMethodName        = "/api.file.v1.FileService/DeleteFile"
-	FileService_RenameFile_FullMethodName        = "/api.file.v1.FileService/RenameFile"
-	FileService_CreateFolder_FullMethodName      = "/api.file.v1.FileService/CreateFolder"
-	FileService_MoveFile_FullMethodName          = "/api.file.v1.FileService/MoveFile"
-	FileService_ListTrash_FullMethodName         = "/api.file.v1.FileService/ListTrash"
-	FileService_RestoreFile_FullMethodName       = "/api.file.v1.FileService/RestoreFile"
-	FileService_PermanentDelete_FullMethodName   = "/api.file.v1.FileService/PermanentDelete"
-	FileService_CreateShare_FullMethodName       = "/api.file.v1.FileService/CreateShare"
-	FileService_GetShare_FullMethodName          = "/api.file.v1.FileService/GetShare"
-	FileService_SearchFiles_FullMethodName       = "/api.file.v1.FileService/SearchFiles"
-	FileService_GetDiskUsage_FullMethodName      = "/api.file.v1.FileService/GetDiskUsage"
-	FileService_StreamFileContent_FullMethodName = "/api.file.v1.FileService/StreamFileContent"
+	FileService_CheckUpload_FullMethodName             = "/api.file.v1.FileService/CheckUpload"
+	FileService_UploadChunk_FullMethodName             = "/api.file.v1.FileService/UploadChunk"
+	FileService_MergeChunks_FullMethodName             = "/api.file.v1.FileService/MergeChunks"
+	FileService_ListFiles_FullMethodName               = "/api.file.v1.FileService/ListFiles"
+	FileService_GetDownloadURL_FullMethodName          = "/api.file.v1.FileService/GetDownloadURL"
+	FileService_DeleteFile_FullMethodName              = "/api.file.v1.FileService/DeleteFile"
+	FileService_RenameFile_FullMethodName              = "/api.file.v1.FileService/RenameFile"
+	FileService_CreateFolder_FullMethodName            = "/api.file.v1.FileService/CreateFolder"
+	FileService_MoveFile_FullMethodName                = "/api.file.v1.FileService/MoveFile"
+	FileService_ListTrash_FullMethodName               = "/api.file.v1.FileService/ListTrash"
+	FileService_RestoreFile_FullMethodName             = "/api.file.v1.FileService/RestoreFile"
+	FileService_PermanentDelete_FullMethodName         = "/api.file.v1.FileService/PermanentDelete"
+	FileService_CreateShare_FullMethodName             = "/api.file.v1.FileService/CreateShare"
+	FileService_GetShare_FullMethodName                = "/api.file.v1.FileService/GetShare"
+	FileService_SearchFiles_FullMethodName             = "/api.file.v1.FileService/SearchFiles"
+	FileService_GetDiskUsage_FullMethodName            = "/api.file.v1.FileService/GetDiskUsage"
+	FileService_StreamFileContent_FullMethodName       = "/api.file.v1.FileService/StreamFileContent"
+	FileService_InitPresignedUpload_FullMethodName     = "/api.file.v1.FileService/InitPresignedUpload"
+	FileService_ReportUploadedPart_FullMethodName      = "/api.file.v1.FileService/ReportUploadedPart"
+	FileService_CompletePresignedUpload_FullMethodName = "/api.file.v1.FileService/CompletePresignedUpload"
+	FileService_AbortPresignedUpload_FullMethodName    = "/api.file.v1.FileService/AbortPresignedUpload"
 )
 
 // FileServiceClient is the client API for FileService service.
@@ -76,6 +80,14 @@ type FileServiceClient interface {
 	GetDiskUsage(ctx context.Context, in *GetDiskUsageRequest, opts ...grpc.CallOption) (*GetDiskUsageReply, error)
 	// Stream file content (for local-mode downloads)
 	StreamFileContent(ctx context.Context, in *StreamFileContentRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamFileContentReply], error)
+	// Presigned multipart upload: init or resume session
+	InitPresignedUpload(ctx context.Context, in *InitPresignedUploadRequest, opts ...grpc.CallOption) (*InitPresignedUploadReply, error)
+	// Report a completed part after direct-to-storage upload
+	ReportUploadedPart(ctx context.Context, in *ReportUploadedPartRequest, opts ...grpc.CallOption) (*ReportUploadedPartReply, error)
+	// Complete presigned multipart upload
+	CompletePresignedUpload(ctx context.Context, in *CompletePresignedUploadRequest, opts ...grpc.CallOption) (*CompletePresignedUploadReply, error)
+	// Abort presigned multipart upload
+	AbortPresignedUpload(ctx context.Context, in *AbortPresignedUploadRequest, opts ...grpc.CallOption) (*AbortPresignedUploadReply, error)
 }
 
 type fileServiceClient struct {
@@ -265,6 +277,46 @@ func (c *fileServiceClient) StreamFileContent(ctx context.Context, in *StreamFil
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileService_StreamFileContentClient = grpc.ServerStreamingClient[StreamFileContentReply]
 
+func (c *fileServiceClient) InitPresignedUpload(ctx context.Context, in *InitPresignedUploadRequest, opts ...grpc.CallOption) (*InitPresignedUploadReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InitPresignedUploadReply)
+	err := c.cc.Invoke(ctx, FileService_InitPresignedUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileServiceClient) ReportUploadedPart(ctx context.Context, in *ReportUploadedPartRequest, opts ...grpc.CallOption) (*ReportUploadedPartReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportUploadedPartReply)
+	err := c.cc.Invoke(ctx, FileService_ReportUploadedPart_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileServiceClient) CompletePresignedUpload(ctx context.Context, in *CompletePresignedUploadRequest, opts ...grpc.CallOption) (*CompletePresignedUploadReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompletePresignedUploadReply)
+	err := c.cc.Invoke(ctx, FileService_CompletePresignedUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileServiceClient) AbortPresignedUpload(ctx context.Context, in *AbortPresignedUploadRequest, opts ...grpc.CallOption) (*AbortPresignedUploadReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortPresignedUploadReply)
+	err := c.cc.Invoke(ctx, FileService_AbortPresignedUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FileServiceServer is the server API for FileService service.
 // All implementations must embed UnimplementedFileServiceServer
 // for forward compatibility.
@@ -303,6 +355,14 @@ type FileServiceServer interface {
 	GetDiskUsage(context.Context, *GetDiskUsageRequest) (*GetDiskUsageReply, error)
 	// Stream file content (for local-mode downloads)
 	StreamFileContent(*StreamFileContentRequest, grpc.ServerStreamingServer[StreamFileContentReply]) error
+	// Presigned multipart upload: init or resume session
+	InitPresignedUpload(context.Context, *InitPresignedUploadRequest) (*InitPresignedUploadReply, error)
+	// Report a completed part after direct-to-storage upload
+	ReportUploadedPart(context.Context, *ReportUploadedPartRequest) (*ReportUploadedPartReply, error)
+	// Complete presigned multipart upload
+	CompletePresignedUpload(context.Context, *CompletePresignedUploadRequest) (*CompletePresignedUploadReply, error)
+	// Abort presigned multipart upload
+	AbortPresignedUpload(context.Context, *AbortPresignedUploadRequest) (*AbortPresignedUploadReply, error)
 	mustEmbedUnimplementedFileServiceServer()
 }
 
@@ -363,6 +423,18 @@ func (UnimplementedFileServiceServer) GetDiskUsage(context.Context, *GetDiskUsag
 }
 func (UnimplementedFileServiceServer) StreamFileContent(*StreamFileContentRequest, grpc.ServerStreamingServer[StreamFileContentReply]) error {
 	return status.Error(codes.Unimplemented, "method StreamFileContent not implemented")
+}
+func (UnimplementedFileServiceServer) InitPresignedUpload(context.Context, *InitPresignedUploadRequest) (*InitPresignedUploadReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method InitPresignedUpload not implemented")
+}
+func (UnimplementedFileServiceServer) ReportUploadedPart(context.Context, *ReportUploadedPartRequest) (*ReportUploadedPartReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportUploadedPart not implemented")
+}
+func (UnimplementedFileServiceServer) CompletePresignedUpload(context.Context, *CompletePresignedUploadRequest) (*CompletePresignedUploadReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompletePresignedUpload not implemented")
+}
+func (UnimplementedFileServiceServer) AbortPresignedUpload(context.Context, *AbortPresignedUploadRequest) (*AbortPresignedUploadReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortPresignedUpload not implemented")
 }
 func (UnimplementedFileServiceServer) mustEmbedUnimplementedFileServiceServer() {}
 func (UnimplementedFileServiceServer) testEmbeddedByValue()                     {}
@@ -684,6 +756,78 @@ func _FileService_StreamFileContent_Handler(srv interface{}, stream grpc.ServerS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type FileService_StreamFileContentServer = grpc.ServerStreamingServer[StreamFileContentReply]
 
+func _FileService_InitPresignedUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InitPresignedUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).InitPresignedUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_InitPresignedUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).InitPresignedUpload(ctx, req.(*InitPresignedUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileService_ReportUploadedPart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportUploadedPartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).ReportUploadedPart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_ReportUploadedPart_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).ReportUploadedPart(ctx, req.(*ReportUploadedPartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileService_CompletePresignedUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompletePresignedUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).CompletePresignedUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_CompletePresignedUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).CompletePresignedUpload(ctx, req.(*CompletePresignedUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileService_AbortPresignedUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortPresignedUploadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).AbortPresignedUpload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_AbortPresignedUpload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).AbortPresignedUpload(ctx, req.(*AbortPresignedUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // FileService_ServiceDesc is the grpc.ServiceDesc for FileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -755,6 +899,22 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetDiskUsage",
 			Handler:    _FileService_GetDiskUsage_Handler,
 		},
+		{
+			MethodName: "InitPresignedUpload",
+			Handler:    _FileService_InitPresignedUpload_Handler,
+		},
+		{
+			MethodName: "ReportUploadedPart",
+			Handler:    _FileService_ReportUploadedPart_Handler,
+		},
+		{
+			MethodName: "CompletePresignedUpload",
+			Handler:    _FileService_CompletePresignedUpload_Handler,
+		},
+		{
+			MethodName: "AbortPresignedUpload",
+			Handler:    _FileService_AbortPresignedUpload_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -763,5 +923,5 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "file/v1/file.proto",
+	Metadata: "api/file/v1/file.proto",
 }

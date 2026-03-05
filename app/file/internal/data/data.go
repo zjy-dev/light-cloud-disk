@@ -84,7 +84,7 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 	}
 
 	// Auto-migrate file-related tables
-	if err := db.AutoMigrate(&FilePO{}, &FileStorePO{}, &SharePO{}); err != nil {
+	if err := db.AutoMigrate(&FilePO{}, &FileStorePO{}, &SharePO{}, &UploadSessionPO{}, &UploadPartPO{}); err != nil {
 		helper.Errorf("Auto migration for file tables failed: %v", err)
 	}
 

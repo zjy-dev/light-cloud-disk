@@ -10,6 +10,10 @@ import type {
   MergeChunksReply,
   SearchFilesReply,
   UploadChunkReply,
+  InitPresignedUploadReply,
+  ReportUploadedPartReply,
+  CompletePresignedUploadReply,
+  AbortPresignedUploadReply,
 } from '@/types'
 
 export const fileApi = {
@@ -139,6 +143,44 @@ export const fileApi = {
   // Download a file as a blob (for local-mode stream URLs that need auth)
   downloadBlob(url: string) {
     return client.get<Blob>(url, { responseType: 'blob' })
+  },
+
+  // Presigned multipart upload APIs
+  initPresignedUpload(data: {
+    parentId: number
+    fileName: string
+    fileMd5: string
+    fileSize: number
+    totalParts: number
+  }) {
+    return client.post<InitPresignedUploadReply>('/file/presigned-upload', {
+      parent_id: data.parentId,
+      file_name: data.fileName,
+      file_md5: data.fileMd5,
+      file_size: data.fileSize,
+      total_parts: data.totalParts,
+    })
+  },
+
+  reportUploadedPart(data: { sessionId: string; partNumber: number; etag: string; size: number }) {
+    return client.post<ReportUploadedPartReply>('/file/presigned-upload/part', {
+      session_id: data.sessionId,
+      part_number: data.partNumber,
+      etag: data.etag,
+      size: data.size,
+    })
+  },
+
+  completePresignedUpload(sessionId: string) {
+    return client.post<CompletePresignedUploadReply>('/file/presigned-upload/complete', {
+      session_id: sessionId,
+    })
+  },
+
+  abortPresignedUpload(sessionId: string) {
+    return client.post<AbortPresignedUploadReply>('/file/presigned-upload/abort', {
+      session_id: sessionId,
+    })
   },
 
   // Storage usage

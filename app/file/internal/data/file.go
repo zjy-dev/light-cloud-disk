@@ -66,6 +66,41 @@ func (SharePO) TableName() string {
 	return "shares"
 }
 
+// UploadSessionPO persists presigned multipart upload sessions.
+type UploadSessionPO struct {
+	ID            string `gorm:"primaryKey;size:36"`
+	UserID        int64  `gorm:"index;not null"`
+	ParentID      int64  `gorm:"default:0"`
+	FileName      string `gorm:"size:256;not null"`
+	FileMD5       string `gorm:"size:32;index;not null"`
+	FileSize      int64  `gorm:"not null"`
+	TotalParts    int32  `gorm:"not null"`
+	PartSize      int64  `gorm:"not null"`
+	StorageTarget string `gorm:"size:16;not null"`
+	ObjectKey     string `gorm:"size:512;not null"`
+	S3UploadID    string `gorm:"size:256;not null"`
+	Status        string `gorm:"size:16;not null;default:uploading;index"`
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+func (UploadSessionPO) TableName() string {
+	return "upload_sessions"
+}
+
+// UploadPartPO records individual completed parts within a session.
+type UploadPartPO struct {
+	SessionID  string `gorm:"primaryKey;size:36"`
+	PartNumber int32  `gorm:"primaryKey"`
+	ETag       string `gorm:"size:128;not null"`
+	Size       int64  `gorm:"not null"`
+	UploadedAt time.Time
+}
+
+func (UploadPartPO) TableName() string {
+	return "upload_parts"
+}
+
 type fileRepo struct {
 	data *Data
 	log  *log.Helper
@@ -445,4 +480,113 @@ func (r *fileRepo) poToDomain(po *FilePO) *biz.File {
 		file.DeletedAt = &po.DeletedAt.Time
 	}
 	return file
+}
+
+// ---------------------------------------------------------------------------
+// Upload Session operations
+// ---------------------------------------------------------------------------
+
+func (r *fileRepo) CreateUploadSession(ctx context.Context, session *biz.UploadSession) error {
+	po := &UploadSessionPO{
+		ID:            session.ID,
+		UserID:        session.UserID,
+		ParentID:      session.ParentID,
+		FileName:      session.FileName,
+		FileMD5:       session.FileMD5,
+		FileSize:      session.FileSize,
+		TotalParts:    session.TotalParts,
+		PartSize:      session.PartSize,
+		StorageTarget: session.StorageTarget,
+		ObjectKey:     session.ObjectKey,
+		S3UploadID:    session.S3UploadID,
+		Status:        session.Status,
+		ExpiresAt:     session.ExpiresAt,
+	}
+	return r.data.db.WithContext(ctx).Create(po).Error
+}
+
+func (r *fileRepo) FindUploadSession(ctx context.Context, userID int64, fileMD5 string) (*biz.UploadSession, error) {
+	var po UploadSessionPO
+	if err := r.data.db.WithContext(ctx).
+		Where("user_id = ? AND file_md5 = ? AND status = ?", userID, fileMD5, "uploading").
+		Order("created_at DESC").
+		First(&po).Error; err != nil {
+		return nil, err
+	}
+	return r.sessionToDomain(&po), nil
+}
+
+func (r *fileRepo) FindUploadSessionByID(ctx context.Context, sessionID string) (*biz.UploadSession, error) {
+	var po UploadSessionPO
+	if err := r.data.db.WithContext(ctx).First(&po, "id = ?", sessionID).Error; err != nil {
+		return nil, err
+	}
+	return r.sessionToDomain(&po), nil
+}
+
+func (r *fileRepo) UpdateUploadSessionStatus(ctx context.Context, sessionID, status string) error {
+	return r.data.db.WithContext(ctx).Model(&UploadSessionPO{}).
+		Where("id = ?", sessionID).
+		Update("status", status).Error
+}
+
+func (r *fileRepo) SaveUploadPart(ctx context.Context, sessionID string, partNumber int32, etag string, size int64) error {
+	po := &UploadPartPO{
+		SessionID:  sessionID,
+		PartNumber: partNumber,
+		ETag:       etag,
+		Size:       size,
+		UploadedAt: time.Now(),
+	}
+	// Upsert: if part already exists (retry), overwrite it
+	return r.data.db.WithContext(ctx).Save(po).Error
+}
+
+func (r *fileRepo) FindUploadedParts(ctx context.Context, sessionID string) ([]biz.UploadedPart, error) {
+	var pos []UploadPartPO
+	if err := r.data.db.WithContext(ctx).
+		Where("session_id = ?", sessionID).
+		Order("part_number ASC").
+		Find(&pos).Error; err != nil {
+		return nil, err
+	}
+	parts := make([]biz.UploadedPart, len(pos))
+	for i, po := range pos {
+		parts[i] = biz.UploadedPart{
+			SessionID:  po.SessionID,
+			PartNumber: po.PartNumber,
+			ETag:       po.ETag,
+			Size:       po.Size,
+			UploadedAt: po.UploadedAt,
+		}
+	}
+	return parts, nil
+}
+
+func (r *fileRepo) DeleteUploadSession(ctx context.Context, sessionID string) error {
+	return r.data.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("session_id = ?", sessionID).Delete(&UploadPartPO{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", sessionID).Delete(&UploadSessionPO{}).Error
+	})
+}
+
+func (r *fileRepo) sessionToDomain(po *UploadSessionPO) *biz.UploadSession {
+	return &biz.UploadSession{
+		ID:            po.ID,
+		UserID:        po.UserID,
+		ParentID:      po.ParentID,
+		FileName:      po.FileName,
+		FileMD5:       po.FileMD5,
+		FileSize:      po.FileSize,
+		TotalParts:    po.TotalParts,
+		PartSize:      po.PartSize,
+		StorageTarget: po.StorageTarget,
+		ObjectKey:     po.ObjectKey,
+		S3UploadID:    po.S3UploadID,
+		Status:        po.Status,
+		CreatedAt:     po.CreatedAt,
+		ExpiresAt:     po.ExpiresAt,
+	}
 }

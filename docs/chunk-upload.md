@@ -2,52 +2,70 @@
 
 ## 概述
 
-分块上传是处理大文件上传的核心功能，支持秒传和断点续传。实现在 File Service (`app/file/internal/biz/file.go`)。
+分块上传是处理大文件上传的核心功能，支持秒传、断点续传和双模式上传（直传 vs 预签名）。
 
-## 流程图
+系统根据部署模式和磁盘状态自动选择上传方式：
+
+| 条件 | upload_mode | 上传路径 |
+|------|-------------|----------|
+| MD5 命中（秒传） | `direct` | 无需上传 |
+| Mode A (local) + 磁盘未满 | `direct` | 浏览器 → Gateway → File Service → 本地磁盘 |
+| Mode A (local) + 磁盘已满 | `presigned` | 浏览器 → OSS（直传） |
+| Mode B (s3) | `presigned` | 浏览器 → SeaweedFS/OSS（直传） |
+
+预签名上传的详细说明见 [presigned-upload.md](presigned-upload.md)。
+
+## Direct 模式流程图
 
 ```
 ┌─────────────┐     ┌──────────────────────────────────────┐
 │   客户端     │     │            API Gateway (:8080)       │
 │             │────▶│  POST /api/v1/file/check-upload      │
 └─────────────┘     └───────────────┬──────────────────────┘
-                                    │ gRPC
+                                    │ gRPC (MD5 一致性哈希路由)
                                     ▼
                     ┌──────────────────────────────────────┐
                     │         File Service (:9002)          │
                     │           CheckUpload                │
-                    │  (检查秒传 + 续传 + 磁盘是否满)       │
+                    │  (秒传 + 模式选择 + 续传分块)         │
+                    │  返回: upload_mode + uploaded_chunks  │
                     └───────────────┬──────────────────────┘
                                     │
                        ┌────────────┼────────────┐
                        │            │            │
                        ▼            ▼            ▼
-                  秒传成功     检查 Redis     磁盘已满
-               (store 已存在)  已上传分块    (disk_full)
-                       │            │            │
-                       ▼            ▼            ▼
-                  返回秒传     返回分块列表   Gateway
-                  完成         (续传)        返回 503
-                                    │
-                                    ▼
-                    ┌──────────────────────────────────────┐
-                    │            UploadChunk               │
-                    │  Gateway: POST /api/v1/file/upload-chunk │
-                    │  multipart/form-data 二进制分块上传   │
-                    │  分块写本地磁盘 + Redis INCRBY 计数    │
-                    └───────────────┬──────────────────────┘
-                                    │
-                                    ▼
-                    ┌──────────────────────────────────────┐
-                    │            MergeChunks               │
-                    │  Gateway: POST /api/v1/file/merge-chunks │
-                    │  1. 合并所有分块为完整文件             │
-                    │  2. 计算 MD5 校验                     │
-                    │  3. 上传到 SeaweedFS (S3 API)         │
-                    │     ↳ 失败则兜底直接上传 OSS          │
-                    │  4. 写入数据库 (file_meta + file_store)│
-                    │  5. gRPC 调用 User Service            │
-                    │     更新用户存储用量                   │
+                  秒传成功     upload_mode    upload_mode
+               (store 已存在)   ="direct"     ="presigned"
+                       │       检查 Redis       │
+                       ▼       已上传分块        ▼
+                  返回秒传       │           走预签名流程
+                  完成          ▼           (InitPresigned
+                           返回分块列表      Upload...)
+                           (续传)
+                                │
+                                ▼
+                ┌──────────────────────────────────────┐
+                │            UploadChunk               │
+                │  Gateway: POST /api/v1/file/upload-chunk │
+                │  multipart/form-data 二进制分块上传   │
+                │  分块写本地磁盘 + Redis INCRBY 计数    │
+                └───────────────┬──────────────────────┘
+                                │
+                                ▼
+                ┌──────────────────────────────────────┐
+                │            MergeChunks               │
+                │  Gateway: POST /api/v1/file/merge-chunks │
+                │  1. 合并所有分块为完整文件             │
+                │  2. 计算 MD5 校验                     │
+                │  3. 上传到 SeaweedFS (S3 API)         │
+                │     ↳ 失败则兜底直接上传 OSS          │
+                │  4. 写入数据库 (file_meta + file_store)│
+                │  5. gRPC 调用 User Service            │
+                │     更新用户存储用量                   │
+                │  6. 清理 Redis 和本地临时文件          │
+                │  7. 异步触发 LRU 淘汰检查             │
+                └──────────────────────────────────────┘
+```
                     │  6. 清理 Redis 和本地临时文件          │
                     │  7. 异步触发 LRU 淘汰检查             │
                     └──────────────────────────────────────┘
@@ -159,28 +177,37 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, ...) error {
 
 ```go
 // app/file/internal/biz/file.go
-func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, error) {
-    // 1. Check whether local disk is full
-    localUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
-    if localUsed+fileSize > uc.storageCfg.LocalMaxBytes {
-        return false, nil, true, nil  // disk_full = true
-    }
-
-    // 2. Check whether file already exists (instant upload)
+func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, string, error) {
+    // 1) Check instant upload by MD5 deduplication
     store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
     if err == nil && store != nil {
-        return true, nil, false, nil  // 可以秒传
+        return true, nil, false, "direct", nil // instant-upload hit
     }
 
-    // 3. Get uploaded chunks (resume upload)
+    // 2) Determine upload mode
+    // Mode B (s3): always presigned
+    if uc.storageCfg.Mode == ModeS3 {
+        return false, nil, false, "presigned", nil
+    }
+
+    // Mode A (local): check primary disk availability
+    used, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+    if used+fileSize > uc.storageCfg.PrimaryMaxBytes {
+        // Disk full → switch to presigned OSS upload
+        return false, nil, true, "presigned", nil
+    }
+
+    // 3) Return uploaded chunks for resumable direct upload
     uploadedChunks, err := uc.repo.GetUploadedChunks(ctx, fileMD5)
     if err != nil {
-        return false, nil, false, err
+        return false, nil, false, "direct", err
     }
-
-    return false, uploadedChunks, false, nil
+    return false, uploadedChunks, false, "direct", nil
 }
 ```
+
+返回 5 个值：`canFastUpload, uploadedChunks, diskFull, uploadMode, error`。
+`uploadMode` 决定前端走直传还是预签名流程。
 
 ## 面试要点
 
@@ -190,6 +217,7 @@ func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize
 4. **并发上传？** — 支持多分块并行上传，提高速度
 5. **存储用量更新失败？** — 容错处理，仅告警不阻塞，可通过定时任务修正
 6. **引用计数？** — 多个用户秒传同一文件时共享存储，删除时减引用，引用为 0 才删物理文件
-7. **磁盘满怎么办？** — `CheckUpload` 检测本地磁盘计数器，满则返回 `disk_full=true`，Gateway 回复 503
+7. **磁盘满怎么办？** — `CheckUpload` 检测磁盘计数器，满则返回 `upload_mode="presigned"`，前端自动切换到预签名直传模式
 8. **合并后文件去哪？** — 先上传 SeaweedFS，失败则兜底上传 OSS，同时更新 `file_store.storage_type`
 9. **合并后为什么还要淘汰？** — 异步 `maybeEvictToCloud()` 检查 SeaweedFS 用量，超阈值则通过 Kafka 驱动 worker 将冷数据迁移到 OSS
+10. **直传 vs 预签名？** — 见 [presigned-upload.md](presigned-upload.md)，Mode B 永远走预签名以减少后端带宽开销

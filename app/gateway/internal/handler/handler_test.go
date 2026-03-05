@@ -67,22 +67,26 @@ func (m *mockUserClient) UpdateStorageUsed(ctx context.Context, in *userv1.Updat
 // --- Mock FileServiceClient ---
 
 type mockFileClient struct {
-	checkUploadFn     func(ctx context.Context, in *filev1.CheckUploadRequest, opts ...grpc.CallOption) (*filev1.CheckUploadReply, error)
-	uploadChunkFn     func(ctx context.Context, in *filev1.UploadChunkRequest, opts ...grpc.CallOption) (*filev1.UploadChunkReply, error)
-	mergeChunksFn     func(ctx context.Context, in *filev1.MergeChunksRequest, opts ...grpc.CallOption) (*filev1.MergeChunksReply, error)
-	listFilesFn       func(ctx context.Context, in *filev1.ListFilesRequest, opts ...grpc.CallOption) (*filev1.ListFilesReply, error)
-	getDownloadURLFn  func(ctx context.Context, in *filev1.GetDownloadURLRequest, opts ...grpc.CallOption) (*filev1.GetDownloadURLReply, error)
-	deleteFileFn      func(ctx context.Context, in *filev1.DeleteFileRequest, opts ...grpc.CallOption) (*filev1.DeleteFileReply, error)
-	renameFileFn      func(ctx context.Context, in *filev1.RenameFileRequest, opts ...grpc.CallOption) (*filev1.RenameFileReply, error)
-	createFolderFn    func(ctx context.Context, in *filev1.CreateFolderRequest, opts ...grpc.CallOption) (*filev1.CreateFolderReply, error)
-	moveFileFn        func(ctx context.Context, in *filev1.MoveFileRequest, opts ...grpc.CallOption) (*filev1.MoveFileReply, error)
-	listTrashFn       func(ctx context.Context, in *filev1.ListTrashRequest, opts ...grpc.CallOption) (*filev1.ListTrashReply, error)
-	restoreFileFn     func(ctx context.Context, in *filev1.RestoreFileRequest, opts ...grpc.CallOption) (*filev1.RestoreFileReply, error)
-	permanentDeleteFn func(ctx context.Context, in *filev1.PermanentDeleteRequest, opts ...grpc.CallOption) (*filev1.PermanentDeleteReply, error)
-	createShareFn     func(ctx context.Context, in *filev1.CreateShareRequest, opts ...grpc.CallOption) (*filev1.CreateShareReply, error)
-	getShareFn        func(ctx context.Context, in *filev1.GetShareRequest, opts ...grpc.CallOption) (*filev1.GetShareReply, error)
-	searchFilesFn     func(ctx context.Context, in *filev1.SearchFilesRequest, opts ...grpc.CallOption) (*filev1.SearchFilesReply, error)
-	getDiskUsageFn    func(ctx context.Context, in *filev1.GetDiskUsageRequest, opts ...grpc.CallOption) (*filev1.GetDiskUsageReply, error)
+	checkUploadFn             func(ctx context.Context, in *filev1.CheckUploadRequest, opts ...grpc.CallOption) (*filev1.CheckUploadReply, error)
+	uploadChunkFn             func(ctx context.Context, in *filev1.UploadChunkRequest, opts ...grpc.CallOption) (*filev1.UploadChunkReply, error)
+	mergeChunksFn             func(ctx context.Context, in *filev1.MergeChunksRequest, opts ...grpc.CallOption) (*filev1.MergeChunksReply, error)
+	listFilesFn               func(ctx context.Context, in *filev1.ListFilesRequest, opts ...grpc.CallOption) (*filev1.ListFilesReply, error)
+	getDownloadURLFn          func(ctx context.Context, in *filev1.GetDownloadURLRequest, opts ...grpc.CallOption) (*filev1.GetDownloadURLReply, error)
+	deleteFileFn              func(ctx context.Context, in *filev1.DeleteFileRequest, opts ...grpc.CallOption) (*filev1.DeleteFileReply, error)
+	renameFileFn              func(ctx context.Context, in *filev1.RenameFileRequest, opts ...grpc.CallOption) (*filev1.RenameFileReply, error)
+	createFolderFn            func(ctx context.Context, in *filev1.CreateFolderRequest, opts ...grpc.CallOption) (*filev1.CreateFolderReply, error)
+	moveFileFn                func(ctx context.Context, in *filev1.MoveFileRequest, opts ...grpc.CallOption) (*filev1.MoveFileReply, error)
+	listTrashFn               func(ctx context.Context, in *filev1.ListTrashRequest, opts ...grpc.CallOption) (*filev1.ListTrashReply, error)
+	restoreFileFn             func(ctx context.Context, in *filev1.RestoreFileRequest, opts ...grpc.CallOption) (*filev1.RestoreFileReply, error)
+	permanentDeleteFn         func(ctx context.Context, in *filev1.PermanentDeleteRequest, opts ...grpc.CallOption) (*filev1.PermanentDeleteReply, error)
+	createShareFn             func(ctx context.Context, in *filev1.CreateShareRequest, opts ...grpc.CallOption) (*filev1.CreateShareReply, error)
+	getShareFn                func(ctx context.Context, in *filev1.GetShareRequest, opts ...grpc.CallOption) (*filev1.GetShareReply, error)
+	searchFilesFn             func(ctx context.Context, in *filev1.SearchFilesRequest, opts ...grpc.CallOption) (*filev1.SearchFilesReply, error)
+	getDiskUsageFn            func(ctx context.Context, in *filev1.GetDiskUsageRequest, opts ...grpc.CallOption) (*filev1.GetDiskUsageReply, error)
+	initPresignedUploadFn     func(ctx context.Context, in *filev1.InitPresignedUploadRequest, opts ...grpc.CallOption) (*filev1.InitPresignedUploadReply, error)
+	reportUploadedPartFn      func(ctx context.Context, in *filev1.ReportUploadedPartRequest, opts ...grpc.CallOption) (*filev1.ReportUploadedPartReply, error)
+	completePresignedUploadFn func(ctx context.Context, in *filev1.CompletePresignedUploadRequest, opts ...grpc.CallOption) (*filev1.CompletePresignedUploadReply, error)
+	abortPresignedUploadFn    func(ctx context.Context, in *filev1.AbortPresignedUploadRequest, opts ...grpc.CallOption) (*filev1.AbortPresignedUploadReply, error)
 }
 
 func (m *mockFileClient) CheckUpload(ctx context.Context, in *filev1.CheckUploadRequest, opts ...grpc.CallOption) (*filev1.CheckUploadReply, error) {
@@ -193,6 +197,34 @@ func (m *mockFileClient) SearchFiles(ctx context.Context, in *filev1.SearchFiles
 func (m *mockFileClient) GetDiskUsage(ctx context.Context, in *filev1.GetDiskUsageRequest, opts ...grpc.CallOption) (*filev1.GetDiskUsageReply, error) {
 	if m.getDiskUsageFn != nil {
 		return m.getDiskUsageFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) InitPresignedUpload(ctx context.Context, in *filev1.InitPresignedUploadRequest, opts ...grpc.CallOption) (*filev1.InitPresignedUploadReply, error) {
+	if m.initPresignedUploadFn != nil {
+		return m.initPresignedUploadFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) ReportUploadedPart(ctx context.Context, in *filev1.ReportUploadedPartRequest, opts ...grpc.CallOption) (*filev1.ReportUploadedPartReply, error) {
+	if m.reportUploadedPartFn != nil {
+		return m.reportUploadedPartFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) CompletePresignedUpload(ctx context.Context, in *filev1.CompletePresignedUploadRequest, opts ...grpc.CallOption) (*filev1.CompletePresignedUploadReply, error) {
+	if m.completePresignedUploadFn != nil {
+		return m.completePresignedUploadFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) AbortPresignedUpload(ctx context.Context, in *filev1.AbortPresignedUploadRequest, opts ...grpc.CallOption) (*filev1.AbortPresignedUploadReply, error) {
+	if m.abortPresignedUploadFn != nil {
+		return m.abortPresignedUploadFn(ctx, in, opts...)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -555,7 +587,7 @@ func TestFileHandler_CheckUpload_Success(t *testing.T) {
 func TestFileHandler_CheckUpload_DiskFull(t *testing.T) {
 	fileClient := &mockFileClient{
 		checkUploadFn: func(_ context.Context, _ *filev1.CheckUploadRequest, _ ...grpc.CallOption) (*filev1.CheckUploadReply, error) {
-			return &filev1.CheckUploadReply{DiskFull: true}, nil
+			return &filev1.CheckUploadReply{DiskFull: true, UploadMode: "presigned"}, nil
 		},
 	}
 
@@ -572,9 +604,11 @@ func TestFileHandler_CheckUpload_DiskFull(t *testing.T) {
 
 	h.CheckUpload(c)
 
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	// Gateway now returns 200 with upload_mode="presigned" instead of 503
+	assert.Equal(t, http.StatusOK, w.Code)
 	result := parseJSON(t, w)
 	assert.Equal(t, true, result["disk_full"])
+	assert.Equal(t, "presigned", result["upload_mode"])
 }
 
 func TestFileHandler_UploadChunk_Success(t *testing.T) {

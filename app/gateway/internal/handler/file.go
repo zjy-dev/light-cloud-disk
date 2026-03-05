@@ -29,14 +29,86 @@ func (h *FileHandler) CheckUpload(c *gin.Context) {
 		return
 	}
 
-	reply, err := h.clients.File.CheckUpload(c.Request.Context(), &req)
+	// Route by file MD5 so all operations for the same file hit the same instance.
+	reply, err := h.clients.FileClientByKey(req.FileMd5).CheckUpload(c.Request.Context(), &req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if reply.DiskFull {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "disk full, please retry later", "disk_full": true})
+	// No longer return 503 on disk_full — let the frontend decide based on upload_mode.
+	c.JSON(http.StatusOK, reply)
+}
+
+// ---- Presigned multipart upload ----
+
+func (h *FileHandler) InitPresignedUpload(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	var req filev1.InitPresignedUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.UserId = userID
+
+	reply, err := h.clients.FileClientByKey(req.FileMd5).InitPresignedUpload(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, reply)
+}
+
+func (h *FileHandler) ReportUploadedPart(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	var req filev1.ReportUploadedPartRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.UserId = userID
+
+	reply, err := h.clients.File.ReportUploadedPart(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, reply)
+}
+
+func (h *FileHandler) CompletePresignedUpload(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	var req filev1.CompletePresignedUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.UserId = userID
+
+	reply, err := h.clients.File.CompletePresignedUpload(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, reply)
+}
+
+func (h *FileHandler) AbortPresignedUpload(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	var req filev1.AbortPresignedUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.UserId = userID
+
+	reply, err := h.clients.File.AbortPresignedUpload(c.Request.Context(), &req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -93,7 +165,8 @@ func (h *FileHandler) UploadChunk(c *gin.Context) {
 		ChunkData:  chunkData,
 	}
 
-	reply, err := h.clients.File.UploadChunk(c.Request.Context(), req)
+	// Route by file MD5 for consistent chunk placement.
+	reply, err := h.clients.FileClientByKey(fileMD5).UploadChunk(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -112,7 +185,8 @@ func (h *FileHandler) MergeChunks(c *gin.Context) {
 	}
 	req.UserId = userID
 
-	reply, err := h.clients.File.MergeChunks(c.Request.Context(), &req)
+	// Route by file MD5 so merge hits the same instance that received the chunks.
+	reply, err := h.clients.FileClientByKey(req.FileMd5).MergeChunks(c.Request.Context(), &req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -344,11 +418,7 @@ func (h *FileHandler) GetDownloadURL(c *gin.Context) {
 		return
 	}
 
-	// For local-mode files, rewrite "local://..." to a gateway-served stream URL.
-	// This keeps the response format consistent for the frontend.
-	if strings.HasPrefix(reply.DownloadUrl, "local://") {
-		reply.DownloadUrl = fmt.Sprintf("/api/v1/file/stream/%d", fileID)
-	}
+	reply.DownloadUrl = fmt.Sprintf("/api/v1/file/stream/%d", fileID)
 
 	c.JSON(http.StatusOK, reply)
 }
@@ -358,8 +428,7 @@ func (h *FileHandler) GetDownloadURL(c *gin.Context) {
 func (h *FileHandler) StreamFile(c *gin.Context) {
 	userID := c.GetInt64("user_id")
 	fileID, _ := strconv.ParseInt(c.Param("file_id"), 10, 64)
-
-	stream, err := h.clients.File.StreamFileContent(c.Request.Context(), &filev1.StreamFileContentRequest{
+	downloadReply, err := h.clients.File.GetDownloadURL(c.Request.Context(), &filev1.GetDownloadURLRequest{
 		UserId: userID,
 		FileId: fileID,
 	})
@@ -368,52 +437,103 @@ func (h *FileHandler) StreamFile(c *gin.Context) {
 		return
 	}
 
-	headerSent := false
-	for {
-		msg, recvErr := stream.Recv()
-		if recvErr == io.EOF {
-			break
-		}
-		if recvErr != nil {
-			if !headerSent {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": recvErr.Error()})
-			}
+	if strings.HasPrefix(downloadReply.DownloadUrl, "local://") {
+		stream, err := h.clients.File.StreamFileContent(c.Request.Context(), &filev1.StreamFileContentRequest{
+			UserId: userID,
+			FileId: fileID,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		if !headerSent {
-			contentType := msg.ContentType
-			if contentType == "" {
-				contentType = "application/octet-stream"
+		headerSent := false
+		for {
+			msg, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				break
 			}
-			c.Header("Content-Type", contentType)
-			if msg.FileSize > 0 {
-				c.Header("Content-Length", strconv.FormatInt(msg.FileSize, 10))
-			}
-			if msg.FileName != "" {
-				// RFC 5987 encoding for non-ASCII filenames
-				asciiName := strings.Map(func(r rune) rune {
-					if r > 127 {
-						return '_'
-					}
-					return r
-				}, msg.FileName)
-				c.Header("Content-Disposition", fmt.Sprintf(
-					"attachment; filename=\"%s\"; filename*=UTF-8''%s",
-					asciiName,
-					url.PathEscape(msg.FileName),
-				))
-			}
-			c.Status(http.StatusOK)
-			headerSent = true
-		}
-
-		if len(msg.Chunk) > 0 {
-			if _, writeErr := c.Writer.Write(msg.Chunk); writeErr != nil {
+			if recvErr != nil {
+				if !headerSent {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": recvErr.Error()})
+				}
 				return
 			}
-			c.Writer.Flush()
+
+			if !headerSent {
+				contentType := msg.ContentType
+				if contentType == "" {
+					contentType = "application/octet-stream"
+				}
+				c.Header("Content-Type", contentType)
+				if msg.FileSize > 0 {
+					c.Header("Content-Length", strconv.FormatInt(msg.FileSize, 10))
+				}
+				if msg.FileName != "" {
+					asciiName := strings.Map(func(r rune) rune {
+						if r > 127 {
+							return '_'
+						}
+						return r
+					}, msg.FileName)
+					c.Header("Content-Disposition", fmt.Sprintf(
+						"attachment; filename=\"%s\"; filename*=UTF-8''%s",
+						asciiName,
+						url.PathEscape(msg.FileName),
+					))
+				}
+				c.Status(http.StatusOK)
+				headerSent = true
+			}
+
+			if len(msg.Chunk) > 0 {
+				if _, writeErr := c.Writer.Write(msg.Chunk); writeErr != nil {
+					return
+				}
+				c.Writer.Flush()
+			}
 		}
+		return
+	}
+
+	proxyReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, downloadReply.DownloadUrl, nil)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid download url"})
+		return
+	}
+	proxyResp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "proxy download failed"})
+		return
+	}
+	defer proxyResp.Body.Close()
+
+	if proxyResp.StatusCode >= http.StatusBadRequest {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream storage returned error"})
+		return
+	}
+
+	contentType := proxyResp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	if downloadReply.FileName != "" {
+		asciiName := strings.Map(func(r rune) rune {
+			if r > 127 {
+				return '_'
+			}
+			return r
+		}, downloadReply.FileName)
+		c.Header("Content-Disposition", fmt.Sprintf(
+			"attachment; filename=\"%s\"; filename*=UTF-8''%s",
+			asciiName,
+			url.PathEscape(downloadReply.FileName),
+		))
+	}
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, proxyResp.Body); err != nil {
+		return
 	}
 }
 

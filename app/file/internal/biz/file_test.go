@@ -140,6 +140,39 @@ func (m *MockFileRepo) GetDiskUsage(ctx context.Context, diskType string) (int64
 func (m *MockFileRepo) IncrDiskUsage(ctx context.Context, diskType string, delta int64) error {
 	return m.Called(ctx, diskType, delta).Error(0)
 }
+func (m *MockFileRepo) CreateUploadSession(ctx context.Context, session *UploadSession) error {
+	return m.Called(ctx, session).Error(0)
+}
+func (m *MockFileRepo) FindUploadSession(ctx context.Context, userID int64, fileMD5 string) (*UploadSession, error) {
+	args := m.Called(ctx, userID, fileMD5)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*UploadSession), args.Error(1)
+}
+func (m *MockFileRepo) FindUploadSessionByID(ctx context.Context, sessionID string) (*UploadSession, error) {
+	args := m.Called(ctx, sessionID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*UploadSession), args.Error(1)
+}
+func (m *MockFileRepo) UpdateUploadSessionStatus(ctx context.Context, sessionID string, status string) error {
+	return m.Called(ctx, sessionID, status).Error(0)
+}
+func (m *MockFileRepo) SaveUploadPart(ctx context.Context, sessionID string, partNumber int32, etag string, size int64) error {
+	return m.Called(ctx, sessionID, partNumber, etag, size).Error(0)
+}
+func (m *MockFileRepo) FindUploadedParts(ctx context.Context, sessionID string) ([]UploadedPart, error) {
+	args := m.Called(ctx, sessionID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]UploadedPart), args.Error(1)
+}
+func (m *MockFileRepo) DeleteUploadSession(ctx context.Context, sessionID string) error {
+	return m.Called(ctx, sessionID).Error(0)
+}
 
 // ---------------------------------------------------------------------------
 // Mock UserClient
@@ -262,7 +295,22 @@ var defaultStorageCfg = &StorageConfig{
 	EvictTargetPct:  90,
 }
 
+var localStorageCfg = &StorageConfig{
+	Mode:            ModeLocal,
+	PrimaryMaxBytes: 10 * 1024 * 1024 * 1024, // 10GB (local disk as primary)
+	ThresholdPct:    80,
+	EvictTargetPct:  90,
+}
+
 func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUsecase {
+	return newTestFileUsecaseWithCfg(repo, userClient, defaultStorageCfg)
+}
+
+func newTestFileUsecaseLocal(repo *MockFileRepo, userClient *MockUserClient) *FileUsecase {
+	return newTestFileUsecaseWithCfg(repo, userClient, localStorageCfg)
+}
+
+func newTestFileUsecaseWithCfg(repo *MockFileRepo, userClient *MockUserClient, cfg *StorageConfig) *FileUsecase {
 	mq := new(MockMessageProducer)
 	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
 	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
@@ -276,7 +324,7 @@ func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUse
 	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	cloudStore.On("PresignGetURL", mock.Anything, mock.Anything, mock.Anything).Return("http://oss/presigned", nil).Maybe()
 
-	return NewFileUsecase(repo, userClient, mq, objStore, cloudStore, defaultStorageCfg, "/tmp/test-store", log.DefaultLogger)
+	return NewFileUsecase(repo, userClient, mq, objStore, cloudStore, cfg, "/tmp/test-store", log.DefaultLogger)
 }
 
 type testDeps struct {
@@ -313,66 +361,70 @@ func TestCheckUpload_FastUpload(t *testing.T) {
 		FileMD5: "abc123", Size: 1024, StorePath: "abc123.bin", StorageType: StorageSeaweedFS,
 	}, nil)
 
-	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, uploadMode, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.True(t, canFast)
 	assert.Nil(t, chunks)
 	assert.False(t, diskFull)
+	assert.Equal(t, "direct", uploadMode)
 	repo.AssertExpectations(t)
 }
 
 func TestCheckUpload_ResumeUpload(t *testing.T) {
 	repo := new(MockFileRepo)
-	uc := newTestFileUsecase(repo, new(MockUserClient))
+	uc := newTestFileUsecaseLocal(repo, new(MockUserClient))
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(0), nil)
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32{0, 1, 3}, nil)
 
-	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, uploadMode, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Equal(t, []int32{0, 1, 3}, chunks)
 	assert.False(t, diskFull)
+	assert.Equal(t, "direct", uploadMode) // local mode → direct upload
 	repo.AssertExpectations(t)
 }
 
 func TestCheckUpload_NewUpload(t *testing.T) {
 	repo := new(MockFileRepo)
-	uc := newTestFileUsecase(repo, new(MockUserClient))
+	uc := newTestFileUsecaseLocal(repo, new(MockUserClient))
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(0), nil)
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32(nil), nil)
 
-	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, uploadMode, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Nil(t, chunks)
 	assert.False(t, diskFull)
+	assert.Equal(t, "direct", uploadMode) // local mode → direct upload
 	repo.AssertExpectations(t)
 }
 
 func TestCheckUpload_DiskFull(t *testing.T) {
 	repo := new(MockFileRepo)
-	uc := newTestFileUsecase(repo, new(MockUserClient))
+	uc := newTestFileUsecaseLocal(repo, new(MockUserClient))
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Mock primary storage usage close to limit (mode=s3 → "seaweedfs" counter)
-	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(defaultStorageCfg.PrimaryMaxBytes-100, nil)
+	// Mock primary storage usage close to limit (mode=local → "local" counter)
+	repo.On("GetDiskUsage", ctx, "local").Return(localStorageCfg.PrimaryMaxBytes-100, nil)
 
-	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5) // 1024 > 100 remaining
+	canFast, chunks, diskFull, uploadMode, err := uc.CheckUpload(ctx, "abc123", 1024, 5) // 1024 > 100 remaining
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Nil(t, chunks)
 	assert.True(t, diskFull)
+	assert.Equal(t, "presigned", uploadMode) // s3 mode always presigned
 	repo.AssertExpectations(t)
 }
 
@@ -915,12 +967,13 @@ func TestCheckUpload_LocalMode_DiskFull(t *testing.T) {
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
 	repo.On("GetDiskUsage", ctx, "local").Return(localCfg.PrimaryMaxBytes-100, nil)
 
-	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+	canFast, chunks, diskFull, uploadMode, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
 
 	assert.NoError(t, err)
 	assert.False(t, canFast)
 	assert.Nil(t, chunks)
 	assert.True(t, diskFull)
+	assert.Equal(t, "presigned", uploadMode) // local disk full → presigned
 	repo.AssertExpectations(t)
 }
 
@@ -1024,4 +1077,265 @@ func TestDetectMIME(t *testing.T) {
 	assert.Equal(t, "image/jpeg", detectMIME("photo.jpg"))
 	assert.Equal(t, "image/png", detectMIME("img.png"))
 	assert.Equal(t, "application/octet-stream", detectMIME("unknown"))
+}
+
+// ---------------------------------------------------------------------------
+// Presigned Upload tests
+// ---------------------------------------------------------------------------
+
+func TestInitPresignedUpload_FastUpload(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", Size: 1024, StorePath: "abc123.bin", StorageType: StorageSeaweedFS,
+	}, nil)
+	d.repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
+	d.repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{ID: 42, Name: "test.txt"}, nil)
+	d.userClient.On("UpdateStorageUsed", ctx, int64(1), int64(1024)).Return(nil)
+
+	result, err := d.uc.InitPresignedUpload(ctx, 1, 0, "test.txt", "abc123", 1024, 3)
+
+	assert.NoError(t, err)
+	assert.True(t, result.CanFastUpload)
+	assert.NotNil(t, result.File)
+	d.repo.AssertExpectations(t)
+}
+
+func TestInitPresignedUpload_NewSession(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	// fileSize = 15MB → server computes totalParts = ceil(15MB / 5MB) = 3
+	fileSize := int64(15 * 1024 * 1024)
+
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	d.repo.On("FindUploadSession", ctx, int64(1), "abc123").Return(nil, ErrSessionNotFound)
+	// choosePresignedTarget → GetDiskUsage for seaweedfs
+	d.repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(0), nil)
+	d.objStore.On("InitMultipartUpload", mock.Anything, mock.MatchedBy(func(key string) bool { return true })).Return("upload-id-1", nil)
+	d.objStore.On("PresignUploadPart", mock.Anything, mock.Anything, "upload-id-1", mock.Anything, mock.Anything).Return("http://swf/part?presigned", nil)
+	d.repo.On("CreateUploadSession", ctx, mock.AnythingOfType("*biz.UploadSession")).Return(nil)
+
+	result, err := d.uc.InitPresignedUpload(ctx, 1, 0, "test.txt", "abc123", fileSize, 3)
+
+	assert.NoError(t, err)
+	assert.False(t, result.CanFastUpload)
+	assert.NotEmpty(t, result.SessionID)
+	assert.Equal(t, 3, len(result.PendingParts))
+	assert.Equal(t, "seaweedfs", result.StorageTarget)
+	d.repo.AssertExpectations(t)
+}
+
+func TestInitPresignedUpload_ResumeSession(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	existingSession := &UploadSession{
+		ID:            "existing-session",
+		UserID:        1,
+		FileMD5:       "abc123",
+		TotalParts:    3,
+		PartSize:      defaultPartSize,
+		StorageTarget: "seaweedfs",
+		ObjectKey:     "abc123/test.txt",
+		S3UploadID:    "upload-id-old",
+		Status:        "uploading",
+		ExpiresAt:     time.Now().Add(1 * time.Hour),
+	}
+
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	d.repo.On("FindUploadSession", ctx, int64(1), "abc123").Return(existingSession, nil)
+	d.repo.On("FindUploadedParts", ctx, "existing-session").Return([]UploadedPart{
+		{PartNumber: 1, ETag: "etag1"},
+	}, nil)
+	d.objStore.On("PresignUploadPart", mock.Anything, "abc123/test.txt", "upload-id-old", mock.Anything, mock.Anything).Return("http://swf/part?presigned", nil)
+
+	result, err := d.uc.InitPresignedUpload(ctx, 1, 0, "test.txt", "abc123", 1024, 3)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "existing-session", result.SessionID)
+	assert.Equal(t, 1, len(result.CompletedParts))
+	assert.Equal(t, 2, len(result.PendingParts)) // 3 total - 1 completed = 2 pending
+	d.repo.AssertExpectations(t)
+}
+
+func TestReportUploadedPart_Success(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(&UploadSession{
+		ID: "session-1", UserID: 1, Status: "uploading",
+	}, nil)
+	d.repo.On("SaveUploadPart", ctx, "session-1", int32(1), "etag-abc", int64(5*1024*1024)).Return(nil)
+
+	err := d.uc.ReportUploadedPart(ctx, int64(1), "session-1", 1, "etag-abc", 5*1024*1024)
+
+	assert.NoError(t, err)
+	d.repo.AssertExpectations(t)
+}
+
+func TestReportUploadedPart_Unauthorized(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(&UploadSession{
+		ID: "session-1", UserID: 1, Status: "uploading",
+	}, nil)
+
+	err := d.uc.ReportUploadedPart(ctx, int64(999), "session-1", 1, "etag", 1024)
+
+	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
+func TestReportUploadedPart_SessionNotFound(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "bad-session").Return(nil, ErrSessionNotFound)
+
+	err := d.uc.ReportUploadedPart(ctx, int64(1), "bad-session", 1, "etag", 1024)
+
+	assert.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+func TestReportUploadedPart_SessionCompleted(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-done").Return(&UploadSession{
+		ID: "session-done", UserID: 1, Status: "completed",
+	}, nil)
+
+	err := d.uc.ReportUploadedPart(ctx, int64(1), "session-done", 1, "etag", 1024)
+
+	assert.ErrorIs(t, err, ErrSessionCompleted)
+}
+
+func TestCompletePresignedUpload_Success(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	session := &UploadSession{
+		ID:            "session-1",
+		UserID:        1,
+		FileName:      "test.txt",
+		FileMD5:       "abc123",
+		FileSize:      15 * 1024 * 1024,
+		TotalParts:    3,
+		ParentID:      0,
+		StorageTarget: "seaweedfs",
+		ObjectKey:     "abc123/test.txt",
+		S3UploadID:    "upload-id-1",
+		Status:        "uploading",
+	}
+	uploadedParts := []UploadedPart{
+		{PartNumber: 1, ETag: "etag1"},
+		{PartNumber: 2, ETag: "etag2"},
+		{PartNumber: 3, ETag: "etag3"},
+	}
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(session, nil)
+	d.repo.On("FindUploadedParts", ctx, "session-1").Return(uploadedParts, nil)
+	d.objStore.On("CompleteMultipartUpload", ctx, "abc123/test.txt", "upload-id-1", mock.AnythingOfType("[]biz.CompletedPart")).Return(nil)
+	d.repo.On("CreateStore", ctx, mock.AnythingOfType("*biz.FileStore")).Return(nil)
+	d.repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{ID: 42, Name: "test.txt"}, nil)
+	d.userClient.On("UpdateStorageUsed", ctx, int64(1), int64(15*1024*1024)).Return(nil)
+	d.repo.On("IncrDiskUsage", ctx, "seaweedfs", int64(15*1024*1024)).Return(nil)
+	d.repo.On("UpdateUploadSessionStatus", ctx, "session-1", "completed").Return(nil)
+	// LRU eviction check
+	d.repo.On("GetDiskUsage", mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
+
+	file, err := d.uc.CompletePresignedUpload(ctx, int64(1), "session-1")
+
+	assert.NoError(t, err)
+	assert.NotNil(t, file)
+	d.repo.AssertExpectations(t)
+}
+
+func TestCompletePresignedUpload_IncompleteParts(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	session := &UploadSession{
+		ID:         "session-1",
+		UserID:     1,
+		TotalParts: 3,
+		Status:     "uploading",
+	}
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(session, nil)
+	d.repo.On("FindUploadedParts", ctx, "session-1").Return([]UploadedPart{
+		{PartNumber: 1, ETag: "etag1"},
+		// Only 1 of 3 — incomplete!
+	}, nil)
+
+	file, err := d.uc.CompletePresignedUpload(ctx, int64(1), "session-1")
+
+	assert.ErrorIs(t, err, ErrIncompleteUpload)
+	assert.Nil(t, file)
+}
+
+func TestCompletePresignedUpload_Unauthorized(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(&UploadSession{
+		ID: "session-1", UserID: 1, Status: "uploading",
+	}, nil)
+
+	file, err := d.uc.CompletePresignedUpload(ctx, int64(999), "session-1")
+
+	assert.ErrorIs(t, err, ErrUnauthorized)
+	assert.Nil(t, file)
+}
+
+func TestAbortPresignedUpload_Success(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	session := &UploadSession{
+		ID:            "session-1",
+		UserID:        1,
+		StorageTarget: "seaweedfs",
+		ObjectKey:     "abc123/test.txt",
+		S3UploadID:    "upload-id-1",
+		Status:        "uploading",
+	}
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(session, nil)
+	d.objStore.On("AbortMultipartUpload", ctx, "abc123/test.txt", "upload-id-1").Return(nil)
+	d.repo.On("UpdateUploadSessionStatus", ctx, "session-1", "aborted").Return(nil)
+
+	err := d.uc.AbortPresignedUpload(ctx, int64(1), "session-1")
+
+	assert.NoError(t, err)
+	d.repo.AssertExpectations(t)
+}
+
+func TestAbortPresignedUpload_Unauthorized(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-1").Return(&UploadSession{
+		ID: "session-1", UserID: 1, Status: "uploading",
+	}, nil)
+
+	err := d.uc.AbortPresignedUpload(ctx, int64(999), "session-1")
+
+	assert.ErrorIs(t, err, ErrUnauthorized)
+}
+
+func TestAbortPresignedUpload_AlreadyCompleted(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindUploadSessionByID", ctx, "session-done").Return(&UploadSession{
+		ID: "session-done", UserID: 1, Status: "completed",
+	}, nil)
+
+	err := d.uc.AbortPresignedUpload(ctx, int64(1), "session-done")
+
+	// AbortPresignedUpload is a no-op for non-uploading sessions (idempotent)
+	assert.NoError(t, err)
 }

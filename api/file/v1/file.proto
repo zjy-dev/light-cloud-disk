@@ -39,6 +39,15 @@ service FileService {
   rpc GetDiskUsage (GetDiskUsageRequest) returns (GetDiskUsageReply);
   // Stream file content (for local-mode downloads)
   rpc StreamFileContent (StreamFileContentRequest) returns (stream StreamFileContentReply);
+
+  // Presigned multipart upload: init or resume session
+  rpc InitPresignedUpload (InitPresignedUploadRequest) returns (InitPresignedUploadReply);
+  // Report a completed part after direct-to-storage upload
+  rpc ReportUploadedPart (ReportUploadedPartRequest) returns (ReportUploadedPartReply);
+  // Complete presigned multipart upload
+  rpc CompletePresignedUpload (CompletePresignedUploadRequest) returns (CompletePresignedUploadReply);
+  // Abort presigned multipart upload
+  rpc AbortPresignedUpload (AbortPresignedUploadRequest) returns (AbortPresignedUploadReply);
 }
 
 // Instant upload and resumable upload check
@@ -52,6 +61,8 @@ message CheckUploadReply {
   bool can_fast_upload = 1;
   repeated int32 uploaded_chunks = 2;
   bool disk_full = 3;
+  // "direct" = chunks flow through backend; "presigned" = client uploads to S3/OSS directly
+  string upload_mode = 4;
 }
 
 // Chunk upload
@@ -262,4 +273,69 @@ message StreamFileContentReply {
   string file_name = 2; // set only in the first message
   int64 file_size = 3; // set only in the first message
   string content_type = 4; // set only in the first message
+}
+
+// --------------- Presigned Multipart Upload ---------------
+
+message InitPresignedUploadRequest {
+  int64 user_id = 1;
+  int64 parent_id = 2;
+  string file_name = 3;
+  string file_md5 = 4;
+  int64 file_size = 5;
+  int32 total_parts = 6;
+}
+
+message PresignedPartInfo {
+  int32 part_number = 1;
+  string upload_url = 2;
+}
+
+message UploadedPartInfo {
+  int32 part_number = 1;
+  string etag = 2;
+}
+
+message InitPresignedUploadReply {
+  string session_id = 1;
+  // Parts still pending upload (with presigned URLs)
+  repeated PresignedPartInfo pending_parts = 2;
+  // Parts already uploaded (for resume)
+  repeated UploadedPartInfo completed_parts = 3;
+  string storage_target = 4; // "seaweedfs" or "oss"
+  int64 part_size = 5;
+  // True when the file already exists (instant upload)
+  bool can_fast_upload = 6;
+  FileInfo file = 7; // set only when can_fast_upload=true
+}
+
+message ReportUploadedPartRequest {
+  string session_id = 1;
+  int32 part_number = 2;
+  string etag = 3;
+  int64 size = 4;
+  int64 user_id = 5;
+}
+
+message ReportUploadedPartReply {
+  bool success = 1;
+}
+
+message CompletePresignedUploadRequest {
+  string session_id = 1;
+  int64 user_id = 2;
+}
+
+message CompletePresignedUploadReply {
+  bool success = 1;
+  FileInfo file = 2;
+}
+
+message AbortPresignedUploadRequest {
+  string session_id = 1;
+  int64 user_id = 2;
+}
+
+message AbortPresignedUploadReply {
+  bool success = 1;
 }

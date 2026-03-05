@@ -32,3 +32,5 @@ store/
 coverage.out
 
 .opencode/
+
+.interview.md

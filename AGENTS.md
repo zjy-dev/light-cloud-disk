@@ -106,7 +106,7 @@ Mode B (s3):    MySQL + SeaweedFS + Kafka
 | `app/` | **核心业务代码**，包含三个微服务 + 一个独立 Worker 进程 |
 | `vendor/` | `go mod vendor` 生成的依赖源码副本；Dockerfile 用 `-mod=vendor` 做**零网络离线构建**，保证 CI/本地/容器三者一致。`.dockerignore` 故意不排除此目录 |
 | `third_party/` | 第三方 proto (google/api annotations)，供 `protoc` 编译时引用 |
-| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / three-tier-storage / gateway / chunk-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
+| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / three-tier-storage / gateway / chunk-upload / presigned-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
 | `frontend/` | Vue 3 前端 SPA，独立 pnpm 项目；拥有自己的 `Dockerfile`（Node 构建 → Nginx 运行） |
 | `.github/workflows/` | `ci.yml`（Push/PR → 后端测试 + 前端测试 + Compose 冒烟 + 构建 + GHCR 推送）、`release.yml`（tag → 多架构二进制 → GitHub Release） |
 
@@ -166,7 +166,7 @@ app/
 │       ├── biz/
 │       │   ├── biz.go
 │       │   ├── file.go          # FileUsecase + FileRepo/UserClient/MessageProducer 接口
-│       │   └── file_test.go     # 38 个单元测试
+│       │   └── file_test.go     # 48 个单元测试
 │       ├── data/
 │       │   ├── data.go          # GORM (MySQL/SQLite) + Redis 初始化
 │       │   ├── file.go          # FileRepo 实现 (GORM + Redis)
@@ -222,10 +222,10 @@ frontend/
     ├── api/
     │   ├── client.ts        # Axios 实例 (baseURL, JWT interceptor, 401 重定向)
     │   ├── user.ts          # 用户 API (register, login, getUserInfo, updateUserInfo)
-    │   └── file.ts          # 文件 API (20 个端点)
+    │   └── file.ts          # 文件 API (24 个端点，含 4 个 presigned upload)
     ├── composables/
     │   ├── useTheme.ts      # 主题切换 (light/dark/system) + localStorage 持久化
-    │   ├── useUpload.ts     # 分块上传 (MD5 / 秒传 / 断点续传 / multipart 上传 / 进度追踪)
+    │   ├── useUpload.ts     # 双模式上传 (direct / presigned) + MD5 秒传 + 断点续传 + 进度追踪
     │   └── __tests__/       # composable 单元测试
     ├── components/
     │   ├── layout/          # AppLayout / AppSidebar / AppHeader
@@ -253,9 +253,13 @@ frontend/
 - [x] UpdateStorageUsed - 更新存储用量 (供 File Service 调用)
 
 ### 文件服务 (app/file/internal/biz/file.go)
-- [x] CheckUpload - 秒传/断点续传检查 + 磁盘满检测
+- [x] CheckUpload - 秒传/断点续传检查 + 双模式选择 (direct/presigned)
 - [x] SaveChunk - 保存分块 (本地磁盘 + Redis 用量计数)
 - [x] MergeChunks - 合并分块 → 双模式上传 (local: 本地磁盘 / s3: SeaweedFS，失败兜底 OSS) → UserClient.UpdateStorageUsed → 异步 LRU 淘汰
+- [x] InitPresignedUpload - 初始化预签名上传 (秒传检查 + 会话创建/续传 + S3 InitMultipartUpload + 签发 URL)
+- [x] ReportUploadedPart - 上报已上传分块 (写 upload_parts 表)
+- [x] CompletePresignedUpload - 完成预签名上传 (S3 CompleteMultipartUpload + 创建文件记录)
+- [x] AbortPresignedUpload - 取消预签名上传 (S3 AbortMultipartUpload + 清理会话)
 - [x] ListFiles - 文件列表
 - [x] CreateFolder - 创建文件夹
 - [x] RenameFile - 重命名
@@ -277,7 +281,9 @@ frontend/
 - [x] JWT 认证中间件
 - [x] CORS 中间件
 - [x] Consul 服务发现客户端
+- [x] MD5 一致性哈希路由 (FNV32a, 150 虚拟节点, Consul 健康检查)
 - [x] StreamFile - 本地模式流式文件下载 (gRPC server-streaming → HTTP 流)
+- [x] 预签名上传代理 (InitPresignedUpload / ReportUploadedPart / CompletePresignedUpload / AbortPresignedUpload)
 
 ### file-worker (app/file/cmd/worker/) — Mode B only
 - [x] Kafka 消费：CloudMigrateWorker (cloud-migrate topic) — 主存→OSS 数据搬迁 + DB/Redis 更新
@@ -288,7 +294,7 @@ frontend/
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 38 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
+| app/file/internal/biz | 单元测试 | 51 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
 | app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS 中间件 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
@@ -296,7 +302,7 @@ frontend/
 
 运行测试:
 ```bash
-go test ./...                              # 全部单元测试 (76 个)
+go test ./...                              # 全部单元测试 (79 个)
 go test -tags=integration ./...            # 包含集成测试 (需要基础设施)
 ```
 
@@ -403,6 +409,12 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 ## 最近更新（2026-03）
 
+- **预签名分块上传 (Presigned Multipart Upload)**: 客户端直传 SeaweedFS/OSS，支持跨设备断点续传
+  - 4 个新 RPC: InitPresignedUpload / ReportUploadedPart / CompletePresignedUpload / AbortPresignedUpload
+  - upload_sessions + upload_parts 数据模型，会话持久化到 DB
+  - CheckUpload 返回 `upload_mode` (direct/presigned) 自动切换
+  - 前端 `useUpload.ts` 双模式上传 (directUpload / presignedUpload)
+- **MD5 一致性哈希路由**: Gateway 使用 FNV32a + 150 虚拟节点 + Consul 发现，按文件 MD5 路由到同一 File Service 实例
 - **双模式存储架构**: Mode A (local: SQLite + 本地磁盘 + goroutine MQ) / Mode B (s3: MySQL + SeaweedFS + Kafka)
 - 可插拔数据库: MySQL / SQLite (DB_DRIVER 环境变量切换)
 - 可插拔消息队列: Kafka / 进程内 goroutine channel (自动根据 KAFKA_BROKERS 选择)
@@ -413,7 +425,13 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - Dockerfile CGO 支持 (gcc + musl-dev) 编译 SQLite
 - 统一 `STORAGE_MODE` + `PRIMARY_MAX_BYTES` 存储配置 (env > config > default)
 - 前端 `local://` URL 自动走 blob 流式下载
-- 88 个后端单元测试 (biz 38 + handler 15 + middleware 9 + user/biz 14 + 其他 12)
+- 101 个后端单元测试 (file/biz 51 + handler 15 + middleware 9 + user/biz 14 + 其他 12)
+- **安全加固 (Code Review)**:
+  - 预签名操作 (Report/Complete/Abort) 增加 user_id 鉴权校验 (`ErrUnauthorized`)
+  - 服务端独立计算 totalParts，不信任客户端传值
+  - hashRouter 移除节点时关闭 gRPC 连接，防止泄漏
+  - DeleteUploadSession 用 GORM 事务保证原子删除
+  - 前端 presignedUpload 失败时自动 abort S3 multipart
 
 ## 前端架构
 
@@ -442,7 +460,7 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - [x] 用户认证 (登录/注册/登出/JWT 自动续期)
 - [x] 文件浏览 (网格/列表视图切换, 排序, 面包屑导航)
 - [x] 文件操作 (新建文件夹, 重命名, 删除, 移动, 下载)
-- [x] 分块上传 (MD5 秒传, 断点续传, 进度显示)
+- [x] 分块上传 (MD5 秒传, 断点续传, 双模式: 直传/预签名, 进度显示)
 - [x] 回收站管理 (列表, 恢复, 永久删除)
 - [x] 文件分享 (创建分享链接, 密码保护, 有效期)
 - [x] 公开分享页 (无需登录访问)

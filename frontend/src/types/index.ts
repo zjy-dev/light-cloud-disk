@@ -45,6 +45,7 @@ export interface CheckUploadReply {
   canFastUpload: boolean
   uploadedChunks: number[]
   diskFull?: boolean
+  uploadMode?: 'direct' | 'presigned'
 }
 
 export interface UploadChunkReply {
@@ -55,6 +56,41 @@ export interface UploadChunkReply {
 export interface MergeChunksReply {
   success: boolean
   file: FileInfo
+}
+
+// ---- Presigned multipart upload ----
+
+export interface PresignedPartInfo {
+  partNumber: number
+  uploadUrl: string
+}
+
+export interface UploadedPartInfo {
+  partNumber: number
+  etag: string
+}
+
+export interface InitPresignedUploadReply {
+  sessionId: string
+  pendingParts: PresignedPartInfo[]
+  completedParts: UploadedPartInfo[]
+  storageTarget: string
+  partSize: number
+  canFastUpload: boolean
+  file?: FileInfo
+}
+
+export interface ReportUploadedPartReply {
+  success: boolean
+}
+
+export interface CompletePresignedUploadReply {
+  success: boolean
+  file: FileInfo
+}
+
+export interface AbortPresignedUploadReply {
+  success: boolean
 }
 
 export interface CreateShareReply {
