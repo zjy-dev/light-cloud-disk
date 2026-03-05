@@ -2,6 +2,7 @@ import client from './client'
 import type {
   CheckUploadReply,
   CreateShareReply,
+  DiskUsageReply,
   GetDownloadURLReply,
   GetShareReply,
   ListFilesReply,
@@ -133,5 +134,15 @@ export const fileApi = {
     return client.get<GetShareReply>(`/share/${shareId}`, {
       params: password ? { password } : undefined,
     })
+  },
+
+  // Download a file as a blob (for local-mode stream URLs that need auth)
+  downloadBlob(url: string) {
+    return client.get<Blob>(url, { responseType: 'blob' })
+  },
+
+  // Storage usage
+  getDiskUsage() {
+    return client.get<DiskUsageReply>('/disk-usage')
   },
 }

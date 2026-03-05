@@ -73,6 +73,7 @@ func main() {
 		auth.DELETE("/files", fileHandler.DeleteFile)
 		auth.PUT("/file/move", fileHandler.MoveFile)
 		auth.GET("/file/download/:file_id", fileHandler.GetDownloadURL)
+		auth.GET("/file/stream/:file_id", fileHandler.StreamFile)
 		auth.GET("/files/search", fileHandler.SearchFiles)
 		auth.GET("/disk-usage", fileHandler.GetDiskUsage)
 

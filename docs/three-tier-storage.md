@@ -2,9 +2,16 @@
 
 ## 概述
 
-文件上传后的存储采用 **本地磁盘 → SeaweedFS → 阿里云 OSS** 三级架构，通过 LRU 淘汰策略自动在各存储层之间迁移数据。设计思路：热数据就近访问、冷数据低成本归档。
+文件上传后的存储采用分层架构，通过 LRU 淘汰策略自动在各存储层之间迁移数据。设计思路：热数据就近访问、冷数据低成本归档。
 
-## 架构图
+项目支持两种部署模式（详见 [dual-mode-storage.md](dual-mode-storage.md)）：
+
+| 模式 | 分层 | 说明 |
+|------|------|------|
+| Mode A (local) | 本地磁盘 → 阿里云 OSS | 单机轻量，无需 SeaweedFS |
+| Mode B (s3) | 本地磁盘(暂存) → SeaweedFS → 阿里云 OSS | 完整三级存储 |
+
+## 架构图 (Mode B: s3)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -15,7 +22,7 @@
 │    ▲ 磁盘满则返回 disk_full        ▲ 满?→ 直接上传 OSS          │
 │    │                               │                              │
 │    │    maybeEvictToCloud():       │                              │
-│    │    SeaweedFS 用量 > 80%       │                              │
+│    │    primary 用量 > threshold%   │                              │
 │    │    → 找 LRU 最近最少访问      │                              │
 │    │    → 发 Kafka cloud-migrate   │                              │
 │    │                               │                              │
@@ -30,19 +37,55 @@
     ┌──────────────┐    ┌──────────────────┐    ┌──────────────┐
     │  本地磁盘     │    │   SeaweedFS      │    │  阿里云 OSS  │
     │  (分块暂存)   │───▶│   (S3 兼容)      │───▶│  (冷存储)    │
-    │  默认 10 GB   │    │   默认 50 GB     │    │   无限       │
+    │              │    │   primary_max    │    │   无限       │
     └──────────────┘    └──────────────────┘    └──────────────┘
       热数据 / 分块          温数据                  冷数据
       Redis 计数器          Redis 计数器            无限容量
 ```
 
+## 架构图 (Mode A: local)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        File Service (gRPC :9002)                │
+│                                                                  │
+│  MergeChunks():                                                  │
+│    本地磁盘 collect 分块 ──合并──▶ 本地 storeDir                │
+│    ▲ 磁盘满则返回 disk_full                                      │
+│    │                                                              │
+│    │    maybeEvictToCloud():                                     │
+│    │    local 用量 > threshold%                                  │
+│    │    → 找 LRU 最近最少访问                                    │
+│    │    → goroutine MQ (进程内 channel)                          │
+│    │    → 读本地文件 → 上传 OSS → 更新 DB → 删本地 → 递减计数器  │
+└──────────────────────────────────────────────────────────────────┘
+
+               Tier 1                          Tier 2
+    ┌──────────────────────────┐       ┌──────────────┐
+    │     本地磁盘              │       │  阿里云 OSS  │
+    │  (storeDir, 主存储)       │──────▶│  (冷存储)    │
+    │  primary_max_bytes       │       │   无限       │
+    └──────────────────────────┘       └──────────────┘
+         热/温数据                         冷数据
+         Redis 计数器                     无限容量
+```
+
 ## 存储层说明
+
+### Mode B (s3)
 
 | 层级 | 存储 | 用途 | 容量配置 | 实现类 |
 |------|------|------|----------|--------|
-| Tier 1 | 本地磁盘 | 分块暂存、合并缓冲 | `LOCAL_MAX_BYTES` (默认 10GB) | 文件系统 |
-| Tier 2 | SeaweedFS | 合并后文件主存 | `SEAWEEDFS_MAX_BYTES` (默认 50GB) | `seaweedfsClient` (aws-sdk-go-v2/s3) |
+| Tier 1 | 本地磁盘 | 分块暂存、合并缓冲 | `LOCAL_MAX_BYTES` | 文件系统 |
+| Tier 2 | SeaweedFS | 合并后文件主存 | `PRIMARY_MAX_BYTES` | `seaweedfsClient` (aws-sdk-go-v2/s3) |
 | Tier 3 | 阿里云 OSS | 冷数据归档 | 无限 | `ossClient` (alibabacloud-oss-go-sdk-v2) |
+
+### Mode A (local)
+
+| 层级 | 存储 | 用途 | 容量配置 | 实现类 |
+|------|------|------|----------|--------|
+| Tier 1 | 本地磁盘 | 分块暂存 + 合并后主存 | `PRIMARY_MAX_BYTES` | 文件系统 |
+| Tier 2 | 阿里云 OSS | 冷数据归档 (可选) | 无限 | `ossClient` (alibabacloud-oss-go-sdk-v2) |
 
 ## 核心流程
 
@@ -222,25 +265,14 @@ message GetDiskUsageReply {
 
 ```protobuf
 message Storage {
-    message SeaweedFS {
-        string endpoint = 1;    // http://seaweedfs:8333
-        string region = 2;      // us-east-1
-        string bucket = 3;      // light-cloud-disk
-        string access_key = 4;
-        string secret_key = 5;
-    }
-    message OSS {
-        string endpoint = 1;    // oss-cn-hangzhou.aliyuncs.com
-        string region = 2;
-        string bucket = 3;
-        string access_key_id = 4;
-        string access_key_secret = 5;
-    }
-    SeaweedFS seaweedfs = 1;
-    OSS oss = 2;
-    int64 local_max_bytes = 3;           // 默认 10GB
-    int64 seaweedfs_max_bytes = 4;       // 默认 50GB
-    int64 seaweedfs_threshold_pct = 5;   // 默认 80%
+    string mode = 1;                    // "local" | "s3"
+    int64 primary_max_bytes = 2;        // 主存上限 (本地磁盘或 SeaweedFS)
+    int64 threshold_percent = 3;        // 淘汰阈值 (默认 80%)
+    int64 evict_target_percent = 4;     // 淘汰目标 (默认 90%)
+    message SeaweedFS { ... }
+    message OSS { ... }
+    SeaweedFS seaweedfs = 5;
+    OSS oss = 6;
 }
 ```
 
@@ -248,6 +280,9 @@ message Storage {
 
 | 变量 | 说明 | 服务 | 默认值 |
 |------|------|------|--------|
+| `STORAGE_MODE` | 存储模式 | file | local |
+| `PRIMARY_MAX_BYTES` | 主存上限 (字节) | file | 10737418240 (10GB) |
+| `FILE_STORE_DIR` | 本地合并文件目录 | file | /app/store |
 | `SEAWEEDFS_ENDPOINT` | SeaweedFS S3 端点 | file, worker | - |
 | `SEAWEEDFS_REGION` | S3 Region | file, worker | us-east-1 |
 | `SEAWEEDFS_BUCKET` | S3 Bucket | file, worker | light-cloud-disk |
@@ -258,9 +293,6 @@ message Storage {
 | `OSS_BUCKET` | OSS Bucket | file, worker | - |
 | `OSS_ACCESS_KEY_ID` | OSS AK | file, worker | - |
 | `OSS_ACCESS_KEY_SECRET` | OSS SK | file, worker | - |
-| `LOCAL_MAX_BYTES` | 本地磁盘上限 | file | 10737418240 (10GB) |
-| `SEAWEEDFS_MAX_BYTES` | SeaweedFS 上限 | file | 53687091200 (50GB) |
-| `SEAWEEDFS_THRESHOLD_PCT` | 淘汰阈值% | file | 80 |
 
 ## 降级策略
 

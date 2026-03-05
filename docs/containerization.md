@@ -1,38 +1,51 @@
 # 容器化部署
 
-本项目支持 Docker Compose 和 Podman Compose。
+本项目支持 Docker Compose 和 Podman Compose，提供**双模式部署**。
+
+## 部署模式
+
+| | Mode A: local (轻量) | Mode B: s3 (完整) |
+|--|---|---|
+| **启动命令** | `docker compose --env-file .env.local up -d` | `docker compose --env-file .env.s3 --profile s3 up -d` |
+| **服务数** | 6 (consul, redis, user, file, gateway, frontend) | 10 (+ mysql, kafka, seaweedfs, file-worker) |
+| **数据库** | SQLite (容器内文件) | MySQL 8.0 |
+| **消息队列** | 进程内 goroutine | Kafka |
+| **对象存储** | 本地磁盘 | SeaweedFS |
 
 ## 服务组成
 
-| 服务 | 镜像 | 端口 | 说明 |
-|------|------|------|------|
-| consul | hashicorp/consul:1.19 | 8500 (UI+API) | 服务注册与发现 |
-| mysql | mysql:8.0 | 3306 | 主数据库 |
-| redis | redis:7-alpine | 6379 | 分块状态 + 磁盘用量计数 |
-| kafka | apache/kafka:3.7.0 | 9092 | 消息队列 (cloud-migrate, file-thumbnail) |
-| seaweedfs | chrislusf/seaweedfs:latest | 9333, 8333 | S3 兼容对象存储 (温数据) |
-| user-service | 自构建 | 9001 (gRPC) | 用户服务 |
-| file-service | 自构建 | 9002 (gRPC) | 文件服务 |
-| gateway | 自构建 | 8080 (HTTP) | API 网关 |
-| file-worker | 自构建 | - | Kafka 消费：SeaweedFS→OSS 冷迁移 |
-| frontend | 自构建 | 3000 (HTTP→Nginx) | Vue 3 SPA |
+| 服务 | 镜像 | 端口 | Profiles | 说明 |
+|------|------|------|----------|------|
+| consul | hashicorp/consul:1.19 | 8500 | - (always) | 服务注册与发现 |
+| redis | redis:7-alpine | 6379 | - (always) | 分块状态 + 磁盘用量计数 |
+| mysql | mysql:8.0 | 3306 | s3 | 数据库 (完整模式) |
+| kafka | apache/kafka:3.7.0 | 9092 | s3 | 消息队列 (完整模式) |
+| seaweedfs | chrislusf/seaweedfs:latest | 9333, 8333 | s3 | S3 兼容对象存储 (完整模式) |
+| user-service | 自构建 | 9001 (gRPC) | - (always) | 用户服务 |
+| file-service | 自构建 | 9002 (gRPC) | - (always) | 文件服务 |
+| gateway | 自构建 | 8080 (HTTP) | - (always) | API 网关 |
+| file-worker | 自构建 | - | s3 | Kafka 消费：冷迁移 (完整模式) |
+| frontend | 自构建 | 3000 (Nginx) | - (always) | Vue 3 SPA |
 
-说明：合并后文件上传到 SeaweedFS (S3 API)，下载通过预签名 URL 直接访问 SeaweedFS 或 OSS，不再经过 Gateway 代理。
+`profiles: [s3]` 标记的服务只在 `--profile s3` 模式下启动。
 
 ## 快速启动
 
 ```bash
-# Start all services
-docker-compose up -d   # 或 podman-compose up -d
+# Mode A: 轻量模式
+docker compose --env-file .env.local up -d --build
 
-# Start infra only (local development)
-docker-compose up -d consul mysql redis kafka
+# Mode B: 完整模式
+docker compose --env-file .env.s3 --profile s3 up -d --build
 
-# View logs
-docker-compose logs -f gateway user-service file-service
+# 仅基础设施 (本地开发)
+docker compose up -d consul redis
 
-# Stop services
-docker-compose down
+# 查看日志
+docker compose logs -f gateway user-service file-service
+
+# 停止服务
+docker compose down
 ```
 
 ## Makefile 命令
@@ -57,24 +70,25 @@ make run-gateway      # 本地运行网关
 ```dockerfile
 # Build stage
 FROM golang:1.25-alpine AS builder
+RUN apk add --no-cache gcc musl-dev  # CGO for SQLite
 ARG SERVICE
 COPY . .
-# worker build path is ./app/file/cmd/worker, others use ./app/${SERVICE}/cmd
-RUN if [ "$SERVICE" = "worker" ]; then BUILD_PATH=./app/file/cmd/worker; else BUILD_PATH=./app/${SERVICE}/cmd; fi; \
-    go build -o /app/server ${BUILD_PATH}
+# CGO_ENABLED=1 for SQLite support
+RUN CGO_ENABLED=1 go build -mod=vendor -o /app/server ${BUILD_PATH}
 
 # Runtime stage
 FROM alpine:3.21
+RUN mkdir -p /app/data /app/store  # SQLite DB + local file storage
 COPY --from=builder /app/server /app/server
-COPY --from=builder /app/configs/ /app/configs/
-# gateway/worker run directly, user/file start with -conf
 ```
 
 特点：
-- `CGO_ENABLED=0` 静态编译，无外部依赖
-- 最终镜像约 20MB
+- `CGO_ENABLED=1` + musl-dev 支持 SQLite 编译
+- 最终镜像约 25MB
 - 支持通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
-- worker 和 gateway 无需 YAML 配置文件，从环境变量读取
+- `/app/data/` 存放 SQLite 数据库文件
+- `/app/store/` 存放本地模式的合并文件
+- worker 和 gateway 不需要 YAML 配置文件，从环境变量读取
 
 ## Frontend Dockerfile
 
@@ -100,24 +114,37 @@ docker-compose.yml 使用 `depends_on` + `condition` 控制启动顺序。
 
 ## 环境变量
 
-通过 `.env` 文件或直接设置环境变量：
+通过 `.env.local` 或 `.env.s3` 文件配置：
 
+### .env.local (轻量模式)
 ```bash
-# Database
-DB_PASSWORD=root123
-DB_NAME=cloud_disk
-
-# JWT
+DB_DRIVER=sqlite
+SQLITE_PATH=/app/data/cloud_disk.db
+STORAGE_MODE=local
+PRIMARY_MAX_BYTES=10737418240
+FILE_STORE_DIR=/app/store
 JWT_SECRET=your_jwt_secret
+CONSUL_ADDR=consul:8500
+REDIS_ADDR=redis:6379
+```
 
+### .env.s3 (完整模式)
+```bash
+DB_DRIVER=mysql
+DB_PASSWORD=root123
+STORAGE_MODE=s3
+PRIMARY_MAX_BYTES=107374182400
+KAFKA_BROKERS=kafka:9092
+SEAWEEDFS_ENDPOINT=http://seaweedfs:8333
+SEAWEEDFS_BUCKET=light-cloud-disk
+JWT_SECRET=your_jwt_secret
+CONSUL_ADDR=consul:8500
+REDIS_ADDR=redis:6379
 # OSS (optional)
 OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
 OSS_ACCESS_KEY_ID=your_key
 OSS_ACCESS_KEY_SECRET=your_secret
-OSS_BUCKET_NAME=your_bucket
-
-# Version
-VERSION=v3.0.0
+OSS_BUCKET=your_bucket
 ```
 
 ## 本地开发模式

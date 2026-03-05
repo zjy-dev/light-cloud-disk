@@ -278,7 +278,7 @@ func storeRootDir() string {
 	if v := os.Getenv("FILE_STORE_DIR"); v != "" {
 		return v
 	}
-	return "/tmp/light-cloud-disk/store"
+	return "./store"
 }
 
 func (r *fileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error {

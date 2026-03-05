@@ -2,7 +2,14 @@
 
 ## 概述
 
-本项目使用 Kafka 消息队列实现文件上传后的异步处理，包括 **SeaweedFS → OSS 冷迁移**和缩略图生成。采用 `segmentio/kafka-go` 作为 Go 客户端，遵循 Clean Architecture 在 biz 层定义 `MessageProducer` 接口，data 层实现 Kafka 生产者，独立 Worker 进程消费消息。
+本项目使用消息队列实现文件上传后的异步处理，包括 **主存 → OSS 冷迁移**和缩略图生成。支持两种 MQ 实现：
+
+| 实现 | 适用模式 | 触发条件 | 说明 |
+|------|----------|----------|------|
+| **Kafka** (`segmentio/kafka-go`) | Mode B (s3) | `KAFKA_BROKERS` 环境变量非空 | 分布式持久化 MQ，独立 file-worker 消费 |
+| **goroutine channel** | Mode A (local) | 未配置 `KAFKA_BROKERS` | 进程内 buffered channel (容量 256)，零依赖 |
+
+遵循 Clean Architecture，biz 层定义 `MessageProducer` 接口，data 层根据配置自动选择 Kafka 或 goroutine 实现。
 
 ## 架构
 
@@ -131,18 +138,37 @@ data:
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `KAFKA_BROKERS` | Kafka broker 地址（逗号分隔） | 无（降级为 noopProducer） |
+| `KAFKA_BROKERS` | Kafka broker 地址（逗号分隔） | 无（降级为 goroutine MQ） |
 | `KAFKA_CLOUD_MIGRATE_TOPIC` | 云迁移 topic（Worker 端） | `cloud-migrate` |
 | `KAFKA_THUMBNAIL_TOPIC` | 缩略图 topic（Worker 端） | `file-thumbnail` |
 | `KAFKA_GROUP_ID` | 消费者组 ID | `file-worker-group` |
 
+## goroutine MQ (轻量模式)
+
+当 `KAFKA_BROKERS` 为空时，`NewMessageProducer` 自动创建 `goroutineMQ`：
+
+```go
+type goroutineMQ struct {
+    cloudCh    chan *biz.CloudMigrateMessage   // 缓冲 256
+    thumbCh    chan *biz.ThumbnailMessage      // 缓冲 256
+    repo       biz.FileRepo
+    objStore   biz.ObjectStorage
+    cloudStore biz.CloudStorage
+}
+```
+
+- 启动两个后台 goroutine 分别消费两个 channel
+- `consumeCloudMigrate()`: 读主存文件 → 上传 OSS → 更新 DB → 删主存 → 递减 Redis 计数器
+- 消息不持久化，进程重启丢失（单机场景可接受，重启后 `maybeEvictToCloud` 会重新触发）
+- 实现 `biz.MessageProducer` 接口，业务层无感知
+
 ## 可靠性设计
 
-1. **生产端**: 同步 Write，`RequiredAcks = RequireAll`（等待所有副本确认）
-2. **消费端**: `FetchMessage` + 处理成功后 `CommitMessages`（手动 offset 提交）
-3. **降级策略**: 未配置 `KAFKA_BROKERS` 时自动使用 `noopProducer`，MQ 失败不阻塞主流程
-4. **消息 Key**: CloudMigrateMessage 用 `file_md5`，ThumbnailMessage 用 `file_id`，保证同文件消息路由到同分区
-5. **幂等处理**: Worker 以 `file_store_id` + `storage_type` 判断是否已迁移，跳过重复消息
+1. **Kafka 生产端**: 同步 Write，`RequiredAcks = RequireAll`（等待所有副本确认）
+2. **Kafka 消费端**: `FetchMessage` + 处理成功后 `CommitMessages`（手动 offset 提交）
+3. **自动降级**: 未配置 `KAFKA_BROKERS` → goroutine MQ；MQ 发送失败仅 warn 日志，不阻塞主流程
+4. **消息 Key**: CloudMigrateMessage 用 `file_md5`，ThumbnailMessage 用 `file_id`
+5. **幂等处理**: Worker/goroutine 以 `file_store_id` + `storage_type` 判断是否已迁移，跳过重复消息
 
 ## 待实现
 

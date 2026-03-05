@@ -197,6 +197,10 @@ func (m *mockFileClient) GetDiskUsage(ctx context.Context, in *filev1.GetDiskUsa
 	return nil, errors.New("not implemented")
 }
 
+func (m *mockFileClient) StreamFileContent(_ context.Context, _ *filev1.StreamFileContentRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[filev1.StreamFileContentReply], error) {
+	return nil, errors.New("not implemented")
+}
+
 // --- Test helpers ---
 
 func init() {
@@ -649,10 +653,9 @@ func TestFileHandler_GetDiskUsage_Success(t *testing.T) {
 	fileClient := &mockFileClient{
 		getDiskUsageFn: func(_ context.Context, _ *filev1.GetDiskUsageRequest, _ ...grpc.CallOption) (*filev1.GetDiskUsageReply, error) {
 			return &filev1.GetDiskUsageReply{
-				LocalUsedBytes:     1024,
-				LocalMaxBytes:      10737418240,
-				SeaweedfsUsedBytes: 2048,
-				SeaweedfsMaxBytes:  53687091200,
+				PrimaryUsedBytes: 2048,
+				PrimaryMaxBytes:  53687091200,
+				PrimaryType:      "seaweedfs",
 			}, nil
 		},
 	}

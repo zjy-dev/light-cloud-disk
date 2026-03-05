@@ -19,60 +19,63 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	FileService_CheckUpload_FullMethodName     = "/api.file.v1.FileService/CheckUpload"
-	FileService_UploadChunk_FullMethodName     = "/api.file.v1.FileService/UploadChunk"
-	FileService_MergeChunks_FullMethodName     = "/api.file.v1.FileService/MergeChunks"
-	FileService_ListFiles_FullMethodName       = "/api.file.v1.FileService/ListFiles"
-	FileService_GetDownloadURL_FullMethodName  = "/api.file.v1.FileService/GetDownloadURL"
-	FileService_DeleteFile_FullMethodName      = "/api.file.v1.FileService/DeleteFile"
-	FileService_RenameFile_FullMethodName      = "/api.file.v1.FileService/RenameFile"
-	FileService_CreateFolder_FullMethodName    = "/api.file.v1.FileService/CreateFolder"
-	FileService_MoveFile_FullMethodName        = "/api.file.v1.FileService/MoveFile"
-	FileService_ListTrash_FullMethodName       = "/api.file.v1.FileService/ListTrash"
-	FileService_RestoreFile_FullMethodName     = "/api.file.v1.FileService/RestoreFile"
-	FileService_PermanentDelete_FullMethodName = "/api.file.v1.FileService/PermanentDelete"
-	FileService_CreateShare_FullMethodName     = "/api.file.v1.FileService/CreateShare"
-	FileService_GetShare_FullMethodName        = "/api.file.v1.FileService/GetShare"
-	FileService_SearchFiles_FullMethodName     = "/api.file.v1.FileService/SearchFiles"
-	FileService_GetDiskUsage_FullMethodName    = "/api.file.v1.FileService/GetDiskUsage"
+	FileService_CheckUpload_FullMethodName       = "/api.file.v1.FileService/CheckUpload"
+	FileService_UploadChunk_FullMethodName       = "/api.file.v1.FileService/UploadChunk"
+	FileService_MergeChunks_FullMethodName       = "/api.file.v1.FileService/MergeChunks"
+	FileService_ListFiles_FullMethodName         = "/api.file.v1.FileService/ListFiles"
+	FileService_GetDownloadURL_FullMethodName    = "/api.file.v1.FileService/GetDownloadURL"
+	FileService_DeleteFile_FullMethodName        = "/api.file.v1.FileService/DeleteFile"
+	FileService_RenameFile_FullMethodName        = "/api.file.v1.FileService/RenameFile"
+	FileService_CreateFolder_FullMethodName      = "/api.file.v1.FileService/CreateFolder"
+	FileService_MoveFile_FullMethodName          = "/api.file.v1.FileService/MoveFile"
+	FileService_ListTrash_FullMethodName         = "/api.file.v1.FileService/ListTrash"
+	FileService_RestoreFile_FullMethodName       = "/api.file.v1.FileService/RestoreFile"
+	FileService_PermanentDelete_FullMethodName   = "/api.file.v1.FileService/PermanentDelete"
+	FileService_CreateShare_FullMethodName       = "/api.file.v1.FileService/CreateShare"
+	FileService_GetShare_FullMethodName          = "/api.file.v1.FileService/GetShare"
+	FileService_SearchFiles_FullMethodName       = "/api.file.v1.FileService/SearchFiles"
+	FileService_GetDiskUsage_FullMethodName      = "/api.file.v1.FileService/GetDiskUsage"
+	FileService_StreamFileContent_FullMethodName = "/api.file.v1.FileService/StreamFileContent"
 )
 
 // FileServiceClient is the client API for FileService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type FileServiceClient interface {
-	// 检查秒传和断点续传
+	// Check instant upload and resumable upload
 	CheckUpload(ctx context.Context, in *CheckUploadRequest, opts ...grpc.CallOption) (*CheckUploadReply, error)
-	// 上传文件分块
+	// Upload file chunk
 	UploadChunk(ctx context.Context, in *UploadChunkRequest, opts ...grpc.CallOption) (*UploadChunkReply, error)
-	// 合并文件分块
+	// Merge file chunks
 	MergeChunks(ctx context.Context, in *MergeChunksRequest, opts ...grpc.CallOption) (*MergeChunksReply, error)
-	// 获取用户文件列表
+	// Get user file list
 	ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesReply, error)
-	// 获取文件下载链接
+	// Get file download URL
 	GetDownloadURL(ctx context.Context, in *GetDownloadURLRequest, opts ...grpc.CallOption) (*GetDownloadURLReply, error)
-	// 删除文件（移到回收站）
+	// Delete files (move to trash)
 	DeleteFile(ctx context.Context, in *DeleteFileRequest, opts ...grpc.CallOption) (*DeleteFileReply, error)
-	// 重命名文件
+	// Rename file
 	RenameFile(ctx context.Context, in *RenameFileRequest, opts ...grpc.CallOption) (*RenameFileReply, error)
-	// 创建文件夹
+	// Create folder
 	CreateFolder(ctx context.Context, in *CreateFolderRequest, opts ...grpc.CallOption) (*CreateFolderReply, error)
-	// 移动文件/文件夹
+	// Move files or folders
 	MoveFile(ctx context.Context, in *MoveFileRequest, opts ...grpc.CallOption) (*MoveFileReply, error)
-	// 获取回收站列表
+	// Get trash list
 	ListTrash(ctx context.Context, in *ListTrashRequest, opts ...grpc.CallOption) (*ListTrashReply, error)
-	// 恢复回收站文件
+	// Restore files from trash
 	RestoreFile(ctx context.Context, in *RestoreFileRequest, opts ...grpc.CallOption) (*RestoreFileReply, error)
-	// 彻底删除文件
+	// Permanently delete files
 	PermanentDelete(ctx context.Context, in *PermanentDeleteRequest, opts ...grpc.CallOption) (*PermanentDeleteReply, error)
-	// 创建分享链接
+	// Create share link
 	CreateShare(ctx context.Context, in *CreateShareRequest, opts ...grpc.CallOption) (*CreateShareReply, error)
-	// 获取分享内容
+	// Get share content
 	GetShare(ctx context.Context, in *GetShareRequest, opts ...grpc.CallOption) (*GetShareReply, error)
-	// 搜索文件
+	// Search files
 	SearchFiles(ctx context.Context, in *SearchFilesRequest, opts ...grpc.CallOption) (*SearchFilesReply, error)
-	// 获取磁盘用量
+	// Get disk usage
 	GetDiskUsage(ctx context.Context, in *GetDiskUsageRequest, opts ...grpc.CallOption) (*GetDiskUsageReply, error)
+	// Stream file content (for local-mode downloads)
+	StreamFileContent(ctx context.Context, in *StreamFileContentRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamFileContentReply], error)
 }
 
 type fileServiceClient struct {
@@ -243,42 +246,63 @@ func (c *fileServiceClient) GetDiskUsage(ctx context.Context, in *GetDiskUsageRe
 	return out, nil
 }
 
+func (c *fileServiceClient) StreamFileContent(ctx context.Context, in *StreamFileContentRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamFileContentReply], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &FileService_ServiceDesc.Streams[0], FileService_StreamFileContent_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamFileContentRequest, StreamFileContentReply]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileService_StreamFileContentClient = grpc.ServerStreamingClient[StreamFileContentReply]
+
 // FileServiceServer is the server API for FileService service.
 // All implementations must embed UnimplementedFileServiceServer
 // for forward compatibility.
 type FileServiceServer interface {
-	// 检查秒传和断点续传
+	// Check instant upload and resumable upload
 	CheckUpload(context.Context, *CheckUploadRequest) (*CheckUploadReply, error)
-	// 上传文件分块
+	// Upload file chunk
 	UploadChunk(context.Context, *UploadChunkRequest) (*UploadChunkReply, error)
-	// 合并文件分块
+	// Merge file chunks
 	MergeChunks(context.Context, *MergeChunksRequest) (*MergeChunksReply, error)
-	// 获取用户文件列表
+	// Get user file list
 	ListFiles(context.Context, *ListFilesRequest) (*ListFilesReply, error)
-	// 获取文件下载链接
+	// Get file download URL
 	GetDownloadURL(context.Context, *GetDownloadURLRequest) (*GetDownloadURLReply, error)
-	// 删除文件（移到回收站）
+	// Delete files (move to trash)
 	DeleteFile(context.Context, *DeleteFileRequest) (*DeleteFileReply, error)
-	// 重命名文件
+	// Rename file
 	RenameFile(context.Context, *RenameFileRequest) (*RenameFileReply, error)
-	// 创建文件夹
+	// Create folder
 	CreateFolder(context.Context, *CreateFolderRequest) (*CreateFolderReply, error)
-	// 移动文件/文件夹
+	// Move files or folders
 	MoveFile(context.Context, *MoveFileRequest) (*MoveFileReply, error)
-	// 获取回收站列表
+	// Get trash list
 	ListTrash(context.Context, *ListTrashRequest) (*ListTrashReply, error)
-	// 恢复回收站文件
+	// Restore files from trash
 	RestoreFile(context.Context, *RestoreFileRequest) (*RestoreFileReply, error)
-	// 彻底删除文件
+	// Permanently delete files
 	PermanentDelete(context.Context, *PermanentDeleteRequest) (*PermanentDeleteReply, error)
-	// 创建分享链接
+	// Create share link
 	CreateShare(context.Context, *CreateShareRequest) (*CreateShareReply, error)
-	// 获取分享内容
+	// Get share content
 	GetShare(context.Context, *GetShareRequest) (*GetShareReply, error)
-	// 搜索文件
+	// Search files
 	SearchFiles(context.Context, *SearchFilesRequest) (*SearchFilesReply, error)
-	// 获取磁盘用量
+	// Get disk usage
 	GetDiskUsage(context.Context, *GetDiskUsageRequest) (*GetDiskUsageReply, error)
+	// Stream file content (for local-mode downloads)
+	StreamFileContent(*StreamFileContentRequest, grpc.ServerStreamingServer[StreamFileContentReply]) error
 	mustEmbedUnimplementedFileServiceServer()
 }
 
@@ -336,6 +360,9 @@ func (UnimplementedFileServiceServer) SearchFiles(context.Context, *SearchFilesR
 }
 func (UnimplementedFileServiceServer) GetDiskUsage(context.Context, *GetDiskUsageRequest) (*GetDiskUsageReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDiskUsage not implemented")
+}
+func (UnimplementedFileServiceServer) StreamFileContent(*StreamFileContentRequest, grpc.ServerStreamingServer[StreamFileContentReply]) error {
+	return status.Error(codes.Unimplemented, "method StreamFileContent not implemented")
 }
 func (UnimplementedFileServiceServer) mustEmbedUnimplementedFileServiceServer() {}
 func (UnimplementedFileServiceServer) testEmbeddedByValue()                     {}
@@ -646,6 +673,17 @@ func _FileService_GetDiskUsage_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FileService_StreamFileContent_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamFileContentRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(FileServiceServer).StreamFileContent(m, &grpc.GenericServerStream[StreamFileContentRequest, StreamFileContentReply]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type FileService_StreamFileContentServer = grpc.ServerStreamingServer[StreamFileContentReply]
+
 // FileService_ServiceDesc is the grpc.ServiceDesc for FileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -718,6 +756,12 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _FileService_GetDiskUsage_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamFileContent",
+			Handler:       _FileService_StreamFileContent_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "file/v1/file.proto",
 }

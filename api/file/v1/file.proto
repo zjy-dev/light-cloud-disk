@@ -37,6 +37,8 @@ service FileService {
   rpc SearchFiles (SearchFilesRequest) returns (SearchFilesReply);
   // Get disk usage
   rpc GetDiskUsage (GetDiskUsageRequest) returns (GetDiskUsageReply);
+  // Stream file content (for local-mode downloads)
+  rpc StreamFileContent (StreamFileContentRequest) returns (stream StreamFileContentReply);
 }
 
 // Instant upload and resumable upload check
@@ -244,8 +246,20 @@ message SearchFilesReply {
 message GetDiskUsageRequest {}
 
 message GetDiskUsageReply {
-  int64 local_used_bytes = 1;
-  int64 local_max_bytes = 2;
-  int64 seaweedfs_used_bytes = 3;
-  int64 seaweedfs_max_bytes = 4;
+  int64 primary_used_bytes = 1;
+  int64 primary_max_bytes = 2;
+  string primary_type = 3; // "local" or "seaweedfs"
+}
+
+// Stream file content (for files stored on local disk in local mode)
+message StreamFileContentRequest {
+  int64 user_id = 1;
+  int64 file_id = 2;
+}
+
+message StreamFileContentReply {
+  bytes chunk = 1;
+  string file_name = 2; // set only in the first message
+  int64 file_size = 3; // set only in the first message
+  string content_type = 4; // set only in the first message
 }

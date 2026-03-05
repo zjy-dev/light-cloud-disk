@@ -21,17 +21,33 @@ type kafkaProducer struct {
 	log                *log.Helper
 }
 
-// NewKafkaProducer creates a Kafka-backed message producer
-// If no brokers are configured, it returns a no-op producer that drops messages safely
-func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, func(), error) {
+// NewMessageProducer creates the appropriate MessageProducer implementation.
+// When Kafka brokers are configured (KAFKA_BROKERS env or config), it returns a
+// Kafka-backed producer. Otherwise it returns an in-process goroutine MQ that
+// handles messages using buffered channels, which is ideal for local mode without
+// external MQ infrastructure.
+func NewMessageProducer(
+	c *conf.Data,
+	storageCfg *conf.Storage,
+	repo biz.FileRepo,
+	objStore biz.ObjectStorage,
+	cloudStore biz.CloudStorage,
+	logger log.Logger,
+) (biz.MessageProducer, func(), error) {
 	helper := log.NewHelper(logger)
-
 	brokers := resolveBrokers(c)
+
 	if len(brokers) == 0 {
-		helper.Warn("Kafka brokers are not configured. Falling back to no-op message producer.")
-		return &noopProducer{}, func() {}, nil
+		// Determine store_dir for goroutine MQ (needed for local-mode migration)
+		storeDir := os.Getenv("FILE_STORE_DIR")
+		if storeDir == "" {
+			storeDir = "./store"
+		}
+		mq, cleanup := newGoroutineMQ(repo, objStore, cloudStore, storeDir, logger)
+		return mq, cleanup, nil
 	}
 
+	// Kafka mode
 	cloudMigrateTopic := "cloud-migrate"
 	thumbnailTopic := "file-thumbnail"
 	if c.Kafka != nil {
@@ -51,7 +67,7 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 			Topic:        topic,
 			Balancer:     &kafka.LeastBytes{},
 			RequiredAcks: kafka.RequireAll,
-			Async:        false, // Use synchronous sends for better reliability
+			Async:        false,
 		}
 	}
 
@@ -67,10 +83,13 @@ func NewKafkaProducer(c *conf.Data, logger log.Logger) (biz.MessageProducer, fun
 	return p, cleanup, nil
 }
 
-// resolveBrokers reads broker addresses from config or KAFKA_BROKERS
+// resolveBrokers reads broker addresses from KAFKA_BROKERS env or config.
+// If KAFKA_BROKERS env is explicitly set (even to empty), it takes precedence.
 func resolveBrokers(c *conf.Data) []string {
-	// Environment variable takes precedence
-	if env := os.Getenv("KAFKA_BROKERS"); env != "" {
+	if env, ok := os.LookupEnv("KAFKA_BROKERS"); ok {
+		if env == "" {
+			return nil // Explicitly disabled
+		}
 		return strings.Split(env, ",")
 	}
 	if c.Kafka != nil {

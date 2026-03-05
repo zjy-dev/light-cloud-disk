@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -341,7 +344,77 @@ func (h *FileHandler) GetDownloadURL(c *gin.Context) {
 		return
 	}
 
+	// For local-mode files, rewrite "local://..." to a gateway-served stream URL.
+	// This keeps the response format consistent for the frontend.
+	if strings.HasPrefix(reply.DownloadUrl, "local://") {
+		reply.DownloadUrl = fmt.Sprintf("/api/v1/file/stream/%d", fileID)
+	}
+
 	c.JSON(http.StatusOK, reply)
+}
+
+// StreamFile streams a locally-stored file directly to the HTTP client.
+// Registered as GET /api/v1/file/stream/:file_id (behind JWT).
+func (h *FileHandler) StreamFile(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	fileID, _ := strconv.ParseInt(c.Param("file_id"), 10, 64)
+
+	stream, err := h.clients.File.StreamFileContent(c.Request.Context(), &filev1.StreamFileContentRequest{
+		UserId: userID,
+		FileId: fileID,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	headerSent := false
+	for {
+		msg, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			if !headerSent {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": recvErr.Error()})
+			}
+			return
+		}
+
+		if !headerSent {
+			contentType := msg.ContentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+			c.Header("Content-Type", contentType)
+			if msg.FileSize > 0 {
+				c.Header("Content-Length", strconv.FormatInt(msg.FileSize, 10))
+			}
+			if msg.FileName != "" {
+				// RFC 5987 encoding for non-ASCII filenames
+				asciiName := strings.Map(func(r rune) rune {
+					if r > 127 {
+						return '_'
+					}
+					return r
+				}, msg.FileName)
+				c.Header("Content-Disposition", fmt.Sprintf(
+					"attachment; filename=\"%s\"; filename*=UTF-8''%s",
+					asciiName,
+					url.PathEscape(msg.FileName),
+				))
+			}
+			c.Status(http.StatusOK)
+			headerSent = true
+		}
+
+		if len(msg.Chunk) > 0 {
+			if _, writeErr := c.Writer.Write(msg.Chunk); writeErr != nil {
+				return
+			}
+			c.Writer.Flush()
+		}
+	}
 }
 
 func (h *FileHandler) GetDiskUsage(c *gin.Context) {

@@ -15,8 +15,12 @@ import (
 
 // Storage type constants
 const (
-	StorageSeaweedFS = "seaweedfs"
-	StorageOSS       = "oss"
+	StorageLocal     = "local"     // files kept on local disk (Mode A)
+	StorageSeaweedFS = "seaweedfs" // files in SeaweedFS S3 (Mode B)
+	StorageOSS       = "oss"       // cold-tier files in Alibaba Cloud OSS
+
+	ModeLocal = "local" // small-server mode: local disk as primary
+	ModeS3    = "s3"    // large-server mode: SeaweedFS as primary
 )
 
 var (
@@ -72,11 +76,15 @@ type ChunkInfo struct {
 	Uploaded   bool
 }
 
-// StorageConfig holds storage tier configuration from conf.proto
+// StorageConfig holds storage tier configuration from conf.proto.
+// Mode decides the primary storage backend:
+//   - "local": local disk is primary, OSS is the eviction target
+//   - "s3":    SeaweedFS is primary, OSS is the eviction target
 type StorageConfig struct {
-	LocalMaxBytes         int64
-	SeaweedFSMaxBytes     int64
-	SeaweedFSThresholdPct int32 // e.g. 80 means 80%
+	Mode            string // "local" or "s3"
+	PrimaryMaxBytes int64  // capacity of the primary storage (local disk or SeaweedFS)
+	ThresholdPct    int32  // eviction trigger, e.g. 80 means 80 %
+	EvictTargetPct  int32  // evict down to this % of threshold (default 90)
 }
 
 // FileRepo is the data-access interface for metadata and chunk operations
@@ -123,12 +131,24 @@ type UserClient interface {
 	UpdateStorageUsed(ctx context.Context, userID int64, delta int64) error
 }
 
+// CompletedPart represents a completed part of a multipart upload
+type CompletedPart struct {
+	PartNumber int32
+	ETag       string
+}
+
 // ObjectStorage abstracts SeaweedFS or any S3-compatible object storage
 type ObjectStorage interface {
 	Put(ctx context.Context, key string, reader io.Reader, size int64) error
 	Delete(ctx context.Context, key string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error)
+
+	// Multipart upload (for presigned uploads)
+	InitMultipartUpload(ctx context.Context, key string) (uploadID string, err error)
+	PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error)
+	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error
+	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
 }
 
 // CloudStorage abstracts cloud object storage such as Alibaba Cloud OSS
@@ -137,6 +157,12 @@ type CloudStorage interface {
 	Delete(ctx context.Context, key string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error)
+
+	// Multipart upload (for presigned uploads)
+	InitMultipartUpload(ctx context.Context, key string) (uploadID string, err error)
+	PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error)
+	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error
+	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
 }
 
 // CloudMigrateMessage is sent to Kafka to trigger async cold migration
@@ -165,9 +191,10 @@ type FileUsecase struct {
 	repo       FileRepo
 	userClient UserClient
 	mq         MessageProducer
-	objStore   ObjectStorage // SeaweedFS 对象存储
-	cloudStore CloudStorage  // OSS 云存储
+	objStore   ObjectStorage
+	cloudStore CloudStorage
 	storageCfg *StorageConfig
+	storeDir   string // local file store directory (from Upload.StoreDir)
 	log        *log.Helper
 }
 
@@ -178,6 +205,7 @@ func NewFileUsecase(
 	objStore ObjectStorage,
 	cloudStore CloudStorage,
 	storageCfg *StorageConfig,
+	storeDir string,
 	logger log.Logger,
 ) *FileUsecase {
 	return &FileUsecase{
@@ -187,22 +215,31 @@ func NewFileUsecase(
 		objStore:   objStore,
 		cloudStore: cloudStore,
 		storageCfg: storageCfg,
+		storeDir:   storeDir,
 		log:        log.NewHelper(logger),
 	}
 }
 
-// CheckUpload verifies instant/resumable upload and local disk availability
+// primaryDiskType returns the Redis counter key for the primary storage tier.
+func (uc *FileUsecase) primaryDiskType() string {
+	if uc.storageCfg.Mode == ModeS3 {
+		return "seaweedfs"
+	}
+	return "local"
+}
+
+// CheckUpload verifies instant/resumable upload and primary-storage disk availability.
 func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, error) {
 	// 1) Check instant upload by MD5 deduplication
 	store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
 	if err == nil && store != nil {
-		return true, nil, false, nil // 秒传命中
+		return true, nil, false, nil // instant-upload hit
 	}
 
-	// 2) Check local disk availability
-	localUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
-	if localUsed+fileSize > uc.storageCfg.LocalMaxBytes {
-		return false, nil, true, nil // 本地磁盘已满
+	// 2) Check primary storage availability
+	used, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+	if used+fileSize > uc.storageCfg.PrimaryMaxBytes {
+		return false, nil, true, nil // primary storage full
 	}
 
 	// 3) Return uploaded chunks for resumable upload
@@ -233,7 +270,7 @@ func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex
 	return uc.repo.SaveChunkInfo(ctx, chunk)
 }
 
-// MergeChunks merges chunks, uploads to object storage, and cleans local temp files
+// MergeChunks merges chunks, uploads to the appropriate storage, and cleans temp files.
 func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalChunks int32) (*File, error) {
 	// 1) Re-check deduplication to reuse existing storage
 	store, _ := uc.repo.FindStoreByMD5(ctx, fileMD5)
@@ -263,45 +300,19 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return nil, err
 	}
 
-	// 3) Choose storage target: SeaweedFS or direct OSS
+	// 3) Choose storage target based on mode
 	ext := filepath.Ext(fileName)
 	if ext == "" {
 		ext = ".bin"
 	}
 	objectKey := fileMD5 + ext
-	storageType := StorageSeaweedFS
-	storePath := objectKey
+	storageType, storePath := uc.uploadMergedFile(ctx, mergedPath, objectKey, fileSize)
 
-	swfUsed, _ := uc.repo.GetDiskUsage(ctx, "seaweedfs")
-	if swfUsed+fileSize <= uc.storageCfg.SeaweedFSMaxBytes {
-		// Prefer uploading to SeaweedFS
-		localFile, err := os.Open(mergedPath)
-		if err != nil {
-			return nil, err
-		}
-		defer localFile.Close()
-
-		if err := uc.objStore.Put(ctx, objectKey, localFile, fileSize); err != nil {
-			return nil, err
-		}
-		_ = uc.repo.IncrDiskUsage(ctx, "seaweedfs", fileSize)
-	} else {
-		// SeaweedFS is full, upload directly to OSS
-		localFile, err := os.Open(mergedPath)
-		if err != nil {
-			return nil, err
-		}
-		defer localFile.Close()
-
-		if err := uc.cloudStore.Put(ctx, objectKey, localFile, fileSize); err != nil {
-			return nil, err
-		}
-		storageType = StorageOSS
+	// 4) Remove local merged file only if uploaded to remote storage
+	if storageType != StorageLocal {
+		_ = os.Remove(mergedPath)
+		_ = uc.repo.IncrDiskUsage(ctx, "local", -fileSize)
 	}
-
-	// 4) Remove local merged file and decrease local usage counter
-	_ = os.Remove(mergedPath)
-	_ = uc.repo.IncrDiskUsage(ctx, "local", -fileSize)
 
 	// 5) Create file_stores record
 	if err := uc.repo.CreateStore(ctx, &FileStore{
@@ -333,10 +344,9 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
 	}
 
-	// 8) Check SeaweedFS threshold and trigger LRU eviction if needed
-	if storageType == StorageSeaweedFS {
-		uc.maybeEvictToCloud(ctx, swfUsed+fileSize)
-	}
+	// 8) Check primary storage threshold and trigger LRU eviction if needed
+	primUsed, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+	uc.maybeEvictToCloud(ctx, primUsed)
 
 	// 9) Send async thumbnail task for media files
 	if uc.mq != nil && isMediaFile(fileName) {
@@ -353,18 +363,105 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 	return createdFile, nil
 }
 
-// maybeEvictToCloud triggers LRU cold migration when SeaweedFS exceeds threshold
+// uploadMergedFile puts the merged file into the appropriate storage backend,
+// falling back to OSS when the primary tier is full.
+func (uc *FileUsecase) uploadMergedFile(ctx context.Context, mergedPath, objectKey string, fileSize int64) (storageType, storePath string) {
+	storePath = objectKey
+
+	if uc.storageCfg.Mode == ModeS3 {
+		// Mode B: SeaweedFS is primary, OSS is fallback
+		primUsed, _ := uc.repo.GetDiskUsage(ctx, "seaweedfs")
+		if primUsed+fileSize <= uc.storageCfg.PrimaryMaxBytes {
+			localFile, err := os.Open(mergedPath)
+			if err == nil {
+				defer localFile.Close()
+				if err := uc.objStore.Put(ctx, objectKey, localFile, fileSize); err == nil {
+					_ = uc.repo.IncrDiskUsage(ctx, "seaweedfs", fileSize)
+					return StorageSeaweedFS, storePath
+				}
+			}
+		}
+		// Fallback to OSS
+		return uc.uploadToOSS(ctx, mergedPath, objectKey, fileSize, storePath)
+	}
+
+	// Mode A: local disk is primary, OSS is fallback
+	primUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
+	if primUsed+fileSize <= uc.storageCfg.PrimaryMaxBytes {
+		// Keep file on local disk — copy/link to storeDir if not already there
+		dest := filepath.Join(uc.storeDir, objectKey)
+		if dest != mergedPath {
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err == nil {
+				// Try hard link first (cheap), fall back to copy
+				if err := os.Link(mergedPath, dest); err != nil {
+					uc.copyFile(mergedPath, dest)
+				}
+			}
+		}
+		_ = uc.repo.IncrDiskUsage(ctx, "local", fileSize)
+		return StorageLocal, storePath
+	}
+	// Local disk full at merge time, upload to OSS directly
+	return uc.uploadToOSS(ctx, mergedPath, objectKey, fileSize, storePath)
+}
+
+// uploadToOSS uploads the merged file to cloud (OSS) storage.
+// Returns StorageOSS on success, or ("", "") and logs error on failure.
+func (uc *FileUsecase) uploadToOSS(ctx context.Context, mergedPath, objectKey string, fileSize int64, storePath string) (string, string) {
+	localFile, err := os.Open(mergedPath)
+	if err != nil {
+		uc.log.Errorf("uploadToOSS: failed to open %s: %v", mergedPath, err)
+		return StorageLocal, storePath // keep local as fallback
+	}
+	defer localFile.Close()
+	if err := uc.cloudStore.Put(ctx, objectKey, localFile, fileSize); err != nil {
+		uc.log.Errorf("uploadToOSS: failed to upload %s: %v", objectKey, err)
+		return StorageLocal, storePath // keep local as fallback
+	}
+	return StorageOSS, storePath
+}
+
+// copyFile copies src to dst by reading and writing.
+func (uc *FileUsecase) copyFile(src, dst string) {
+	in, err := os.Open(src)
+	if err != nil {
+		uc.log.Errorf("copyFile: open %s: %v", src, err)
+		return
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		uc.log.Errorf("copyFile: create %s: %v", dst, err)
+		return
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		uc.log.Errorf("copyFile: copy %s -> %s: %v", src, dst, err)
+	}
+}
+
+// maybeEvictToCloud triggers LRU cold migration when primary storage exceeds threshold.
 func (uc *FileUsecase) maybeEvictToCloud(ctx context.Context, currentUsed int64) {
-	threshold := uc.storageCfg.SeaweedFSMaxBytes * int64(uc.storageCfg.SeaweedFSThresholdPct) / 100
+	threshold := uc.storageCfg.PrimaryMaxBytes * int64(uc.storageCfg.ThresholdPct) / 100
 	if currentUsed <= threshold {
 		return
 	}
 
-	// Evict down to 90% of threshold to avoid frequent oscillation
-	target := threshold * 90 / 100
+	// Evict down to EvictTargetPct of threshold to reduce oscillation
+	evictPct := uc.storageCfg.EvictTargetPct
+	if evictPct <= 0 {
+		evictPct = 90
+	}
+	target := threshold * int64(evictPct) / 100
 	toFree := currentUsed - target
 
-	stores, err := uc.repo.FindLRUStores(ctx, StorageSeaweedFS, 100)
+	// Determine which storage type holds the primary files
+	primaryType := StorageLocal
+	if uc.storageCfg.Mode == ModeS3 {
+		primaryType = StorageSeaweedFS
+	}
+
+	stores, err := uc.repo.FindLRUStores(ctx, primaryType, 100)
 	if err != nil {
 		uc.log.Warnf("Could not load LRU candidates for eviction: %v", err)
 		return
@@ -393,11 +490,11 @@ func (uc *FileUsecase) maybeEvictToCloud(ctx context.Context, currentUsed int64)
 	}
 }
 
-// GetDiskUsage returns current usage of local disk and SeaweedFS
-func (uc *FileUsecase) GetDiskUsage(ctx context.Context) (localUsed, localMax, swfUsed, swfMax int64, err error) {
-	localUsed, _ = uc.repo.GetDiskUsage(ctx, "local")
-	swfUsed, _ = uc.repo.GetDiskUsage(ctx, "seaweedfs")
-	return localUsed, uc.storageCfg.LocalMaxBytes, swfUsed, uc.storageCfg.SeaweedFSMaxBytes, nil
+// GetDiskUsage returns current usage of primary storage and its capacity.
+func (uc *FileUsecase) GetDiskUsage(ctx context.Context) (primaryUsed, primaryMax int64, primaryType string, err error) {
+	pType := uc.primaryDiskType()
+	primaryUsed, _ = uc.repo.GetDiskUsage(ctx, pType)
+	return primaryUsed, uc.storageCfg.PrimaryMaxBytes, pType, nil
 }
 
 func (uc *FileUsecase) ListFiles(ctx context.Context, userID, parentID int64, page, pageSize int32) ([]*File, int64, error) {
@@ -475,7 +572,9 @@ func (uc *FileUsecase) PermanentDelete(ctx context.Context, userID int64, fileID
 	return uc.repo.PermanentDelete(ctx, userID, fileIDs)
 }
 
-// GetDownloadURL generates a presigned URL based on storage type
+// GetDownloadURL generates a presigned URL based on storage type.
+// For local storage, it returns "local://<store_path>" so the gateway can
+// proxy the file content via the streaming RPC.
 func (uc *FileUsecase) GetDownloadURL(ctx context.Context, userID, fileID int64) (string, string, error) {
 	file, err := uc.repo.FindByID(ctx, fileID)
 	if err != nil || file.UserID != userID || file.IsFolder {
@@ -492,6 +591,8 @@ func (uc *FileUsecase) GetDownloadURL(ctx context.Context, userID, fileID int64)
 
 	var downloadURL string
 	switch store.StorageType {
+	case StorageLocal:
+		downloadURL = "local://" + store.StorePath
 	case StorageOSS:
 		downloadURL, err = uc.cloudStore.PresignGetURL(ctx, store.StorePath, time.Hour)
 	default: // seaweedfs
@@ -532,6 +633,34 @@ func (uc *FileUsecase) GetShare(ctx context.Context, shareID, password string) (
 
 func (uc *FileUsecase) SearchFiles(ctx context.Context, userID int64, keyword string, page, pageSize int32) ([]*File, int64, error) {
 	return uc.repo.Search(ctx, userID, keyword, page, pageSize)
+}
+
+// OpenLocalFile opens a locally stored file for streaming download.
+// Returns the file handle, name, size, and MIME type.
+func (uc *FileUsecase) OpenLocalFile(ctx context.Context, userID, fileID int64) (io.ReadCloser, string, int64, string, error) {
+	file, err := uc.repo.FindByID(ctx, fileID)
+	if err != nil || file.UserID != userID || file.IsFolder {
+		return nil, "", 0, "", ErrFileNotFound
+	}
+
+	store, err := uc.repo.FindStoreByMD5(ctx, file.FileMD5)
+	if err != nil {
+		return nil, "", 0, "", ErrFileNotFound
+	}
+
+	if store.StorageType != StorageLocal {
+		return nil, "", 0, "", errors.New("file is not stored locally")
+	}
+
+	// Refresh LRU ordering
+	_ = uc.repo.UpdateLastAccessed(ctx, file.FileMD5)
+
+	localPath := filepath.Join(uc.storeDir, store.StorePath)
+	f, err := os.Open(localPath)
+	if err != nil {
+		return nil, "", 0, "", err
+	}
+	return f, file.Name, file.Size, detectMIME(file.Name), nil
 }
 
 var mediaExtensions = map[string]bool{

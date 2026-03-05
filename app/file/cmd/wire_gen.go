@@ -20,32 +20,31 @@ import (
 
 // Injectors from wire.go:
 
-func wireApp(confServer *conf.Server, confData *conf.Data, storage *conf.Storage, logger log.Logger, registry *consul.Registry, userServiceClient v1.UserServiceClient) (*kratos.App, func(), error) {
+func wireApp(confServer *conf.Server, confData *conf.Data, upload *conf.Upload, storage *conf.Storage, logger log.Logger, registry *consul.Registry, userServiceClient v1.UserServiceClient) (*kratos.App, func(), error) {
 	dataData, cleanup, err := data.NewData(confData, logger)
 	if err != nil {
 		return nil, nil, err
 	}
 	fileRepo := data.NewFileRepo(dataData, logger)
 	userClient := data.NewUserClient(userServiceClient, logger)
-	messageProducer, cleanup2, err := data.NewKafkaProducer(confData, logger)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
 	objectStorage, err := data.NewSeaweedFSClient(storage, logger)
 	if err != nil {
-		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
 	cloudStorage, err := data.NewOSSClient(storage, logger)
 	if err != nil {
-		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	messageProducer, cleanup2, err := data.NewMessageProducer(confData, storage, fileRepo, objectStorage, cloudStorage, logger)
+	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
 	storageConfig := provideStorageConfig(storage)
-	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, objectStorage, cloudStorage, storageConfig, logger)
+	string2 := provideStoreDir(upload)
+	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, objectStorage, cloudStorage, storageConfig, string2, logger)
 	fileService := service.NewFileService(fileUsecase, logger)
 	grpcServer := server.NewGRPCServer(confServer, fileService, logger)
 	app := newApp(logger, grpcServer, registry)

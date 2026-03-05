@@ -44,6 +44,7 @@ export interface TrashFileInfo {
 export interface CheckUploadReply {
   canFastUpload: boolean
   uploadedChunks: number[]
+  diskFull?: boolean
 }
 
 export interface UploadChunkReply {
@@ -86,6 +87,12 @@ export interface SearchFilesReply {
 export interface GetDownloadURLReply {
   downloadUrl: string
   fileName: string
+}
+
+export interface DiskUsageReply {
+  primaryUsedBytes: number
+  primaryMaxBytes: number
+  primaryType: string
 }
 
 export type ViewMode = 'grid' | 'list'

@@ -13,6 +13,8 @@ frontend/coverage/
 .env
 .env.*
 !.env.example
+!.env.local
+!.env.s3
 
 # OS-generated files
 .DS_Store

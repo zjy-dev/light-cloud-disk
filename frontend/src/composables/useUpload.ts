@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import type { AxiosError } from 'axios'
 import SparkMD5 from 'spark-md5'
 import { fileApi } from '@/api/file'
 
@@ -122,7 +123,14 @@ export function useUpload() {
       onComplete?.()
     } catch (err: unknown) {
       task.status = 'error'
-      task.error = err instanceof Error ? err.message : 'Upload failed'
+      const axiosErr = err as AxiosError<{ disk_full?: boolean; error?: string }>
+      if (axiosErr.response?.status === 503 && axiosErr.response.data?.disk_full) {
+        task.error = 'Storage is full. Free up space or wait for cold migration.'
+      } else if (axiosErr.response?.data?.error) {
+        task.error = axiosErr.response.data.error
+      } else {
+        task.error = err instanceof Error ? err.message : 'Upload failed'
+      }
     }
   }
 

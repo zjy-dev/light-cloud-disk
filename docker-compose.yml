@@ -1,5 +1,11 @@
 # Podman/Docker Compose configuration
-# Usage: podman-compose up -d or docker-compose up -d
+#
+# Dual-mode deployment:
+#   Local mode: podman-compose --env-file .env.local up -d
+#   S3 mode:    podman-compose --env-file .env.s3 --profile s3 up -d
+#
+# Local mode uses SQLite + local disk + goroutine MQ (no MySQL/Kafka/SeaweedFS).
+# S3 mode uses MySQL + SeaweedFS + Kafka + file-worker (full infrastructure).
 
 services:
   consul:
@@ -29,6 +35,7 @@ services:
   mysql:
     image: docker.io/library/mysql:8.0
     container_name: cloud-disk-mysql
+    profiles: [s3]
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root123}
       MYSQL_DATABASE: ${DB_NAME:-cloud_disk}
@@ -76,6 +83,7 @@ services:
   kafka:
     image: docker.io/apache/kafka:3.7.0
     container_name: cloud-disk-kafka
+    profiles: [s3]
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -114,6 +122,7 @@ services:
   seaweedfs:
     image: docker.io/chrislusf/seaweedfs:latest
     container_name: cloud-disk-seaweedfs
+    profiles: [s3]
     command: "server -s3 -dir=/data"
     environment:
       NO_PROXY: "*"
@@ -143,17 +152,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
       args:
         SERVICE: user
         VERSION: ${VERSION:-dev}
     image: light-cloud-disk/user-service:${VERSION:-latest}
     container_name: cloud-disk-user
     environment:
+      DB_DRIVER: ${DB_DRIVER:-mysql}
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_USER: root
       DB_PASSWORD: ${DB_PASSWORD:-root123}
       DB_NAME: ${DB_NAME:-cloud_disk}
+      SQLITE_PATH: ${SQLITE_PATH:-/app/data/user.db}
       CONSUL_ADDR: consul:8500
       JWT_SECRET: ${JWT_SECRET:-your_jwt_secret}
       NO_PROXY: "*"
@@ -164,9 +176,9 @@ services:
       https_proxy: ""
     ports:
       - "9001:9001"
+    volumes:
+      - user_data:/app/data
     depends_on:
-      mysql:
-        condition: service_healthy
       consul:
         condition: service_healthy
     networks:
@@ -176,21 +188,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
       args:
         SERVICE: file
         VERSION: ${VERSION:-dev}
     image: light-cloud-disk/file-service:${VERSION:-latest}
     container_name: cloud-disk-file
     environment:
+      DB_DRIVER: ${DB_DRIVER:-mysql}
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_USER: root
       DB_PASSWORD: ${DB_PASSWORD:-root123}
       DB_NAME: ${DB_NAME:-cloud_disk}
+      SQLITE_PATH: ${SQLITE_PATH:-/app/data/file.db}
       REDIS_ADDR: redis:6379
       CONSUL_ADDR: consul:8500
-      KAFKA_BROKERS: kafka:9092
-      SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
+      STORAGE_MODE: ${STORAGE_MODE:-local}
+      PRIMARY_MAX_BYTES: ${PRIMARY_MAX_BYTES:-53687091200}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
+      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-}
       SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
       SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-}
@@ -210,29 +227,35 @@ services:
       - "9002:9002"
     volumes:
       - file_tmp:/app/tmp
+      - file_store:/app/store
+      - file_data:/app/data
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
       consul:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
-      seaweedfs:
-        condition: service_healthy
+      user-service:
+        condition: service_started
     networks:
       - cloud-disk
+
+  # NOTE: In s3 mode, file-service additionally needs mysql and seaweedfs.
+  # Since depends_on cannot be conditional on profiles, the s3 .env sets
+  # DB_DRIVER=mysql and SEAWEEDFS_ENDPOINT which are only available when
+  # --profile s3 brings up those containers. Start s3 mode with:
+  #   podman-compose --env-file .env.s3 --profile s3 up -d
 
   file-worker:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
       args:
         SERVICE: worker
         VERSION: ${VERSION:-dev}
     image: light-cloud-disk/file-worker:${VERSION:-latest}
     container_name: cloud-disk-file-worker
+    profiles: [s3]
     environment:
       DB_HOST: mysql
       DB_PORT: "3306"
@@ -275,6 +298,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
       args:
         SERVICE: gateway
         VERSION: ${VERSION:-dev}
@@ -331,6 +355,9 @@ volumes:
   kafka_data:
   seaweedfs_data:
   file_tmp:
+  file_store:
+  file_data:
+  user_data:
 
 networks:
   cloud-disk:

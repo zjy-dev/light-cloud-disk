@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/go-kratos/kratos/v2/log"
 
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
@@ -124,6 +126,58 @@ func (s *seaweedFSClient) PresignGetURL(ctx context.Context, key string, expires
 	return req.URL, nil
 }
 
+func (s *seaweedFSClient) InitMultipartUpload(ctx context.Context, key string) (string, error) {
+	out, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return "", err
+	}
+	return aws.ToString(out.UploadId), nil
+}
+
+func (s *seaweedFSClient) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error) {
+	req, err := s.presigner.PresignUploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     aws.String(s.bucket),
+		Key:        aws.String(key),
+		UploadId:   aws.String(uploadID),
+		PartNumber: aws.Int32(partNumber),
+	}, s3.WithPresignExpires(expires))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+func (s *seaweedFSClient) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []biz.CompletedPart) error {
+	s3Parts := make([]s3types.CompletedPart, len(parts))
+	for i, p := range parts {
+		s3Parts[i] = s3types.CompletedPart{
+			PartNumber: aws.Int32(p.PartNumber),
+			ETag:       aws.String(p.ETag),
+		}
+	}
+	_, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &s3types.CompletedMultipartUpload{
+			Parts: s3Parts,
+		},
+	})
+	return err
+}
+
+func (s *seaweedFSClient) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+	return err
+}
+
 // noopObjectStorage is used when SeaweedFS is not configured
 type noopObjectStorage struct{}
 
@@ -132,8 +186,20 @@ func (n *noopObjectStorage) Put(_ context.Context, _ string, _ io.Reader, _ int6
 }
 func (n *noopObjectStorage) Delete(_ context.Context, _ string) error { return nil }
 func (n *noopObjectStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
-	return nil, nil
+	return nil, fmt.Errorf("noop object storage: not configured")
 }
 func (n *noopObjectStorage) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
 	return key, nil
+}
+func (n *noopObjectStorage) InitMultipartUpload(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (n *noopObjectStorage) PresignUploadPart(_ context.Context, _, _ string, _ int32, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (n *noopObjectStorage) CompleteMultipartUpload(_ context.Context, _, _ string, _ []biz.CompletedPart) error {
+	return nil
+}
+func (n *noopObjectStorage) AbortMultipartUpload(_ context.Context, _, _ string) error {
+	return nil
 }

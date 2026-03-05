@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -106,6 +107,61 @@ func (o *ossClient) PresignGetURL(ctx context.Context, key string, expires time.
 	return result.URL, nil
 }
 
+func (o *ossClient) InitMultipartUpload(ctx context.Context, key string) (string, error) {
+	out, err := o.client.InitiateMultipartUpload(ctx, &oss.InitiateMultipartUploadRequest{
+		Bucket: oss.Ptr(o.bucket),
+		Key:    oss.Ptr(key),
+	})
+	if err != nil {
+		return "", err
+	}
+	if out.UploadId == nil {
+		return "", nil
+	}
+	return *out.UploadId, nil
+}
+
+func (o *ossClient) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error) {
+	result, err := o.client.Presign(ctx, &oss.UploadPartRequest{
+		Bucket:     oss.Ptr(o.bucket),
+		Key:        oss.Ptr(key),
+		UploadId:   oss.Ptr(uploadID),
+		PartNumber: int32(partNumber),
+	}, oss.PresignExpires(expires))
+	if err != nil {
+		return "", err
+	}
+	return result.URL, nil
+}
+
+func (o *ossClient) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []biz.CompletedPart) error {
+	ossParts := make([]oss.UploadPart, len(parts))
+	for i, p := range parts {
+		ossParts[i] = oss.UploadPart{
+			PartNumber: int32(p.PartNumber),
+			ETag:       oss.Ptr(p.ETag),
+		}
+	}
+	_, err := o.client.CompleteMultipartUpload(ctx, &oss.CompleteMultipartUploadRequest{
+		Bucket:   oss.Ptr(o.bucket),
+		Key:      oss.Ptr(key),
+		UploadId: oss.Ptr(uploadID),
+		CompleteMultipartUpload: &oss.CompleteMultipartUpload{
+			Parts: ossParts,
+		},
+	})
+	return err
+}
+
+func (o *ossClient) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	_, err := o.client.AbortMultipartUpload(ctx, &oss.AbortMultipartUploadRequest{
+		Bucket:   oss.Ptr(o.bucket),
+		Key:      oss.Ptr(key),
+		UploadId: oss.Ptr(uploadID),
+	})
+	return err
+}
+
 // noopCloudStorage is used when cloud storage is not configured
 type noopCloudStorage struct{}
 
@@ -114,8 +170,20 @@ func (n *noopCloudStorage) Put(_ context.Context, _ string, _ io.Reader, _ int64
 }
 func (n *noopCloudStorage) Delete(_ context.Context, _ string) error { return nil }
 func (n *noopCloudStorage) Get(_ context.Context, _ string) (io.ReadCloser, error) {
-	return nil, nil
+	return nil, fmt.Errorf("noop cloud storage: not configured")
 }
 func (n *noopCloudStorage) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
 	return key, nil
+}
+func (n *noopCloudStorage) InitMultipartUpload(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (n *noopCloudStorage) PresignUploadPart(_ context.Context, _, _ string, _ int32, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (n *noopCloudStorage) CompleteMultipartUpload(_ context.Context, _, _ string, _ []biz.CompletedPart) error {
+	return nil
+}
+func (n *noopCloudStorage) AbortMultipartUpload(_ context.Context, _, _ string) error {
+	return nil
 }

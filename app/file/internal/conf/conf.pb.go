@@ -256,12 +256,18 @@ func (x *Upload) GetStoreDir() string {
 
 type Storage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// local disk max bytes for chunk temp + merge temp
-	LocalMaxBytes int64              `protobuf:"varint,1,opt,name=local_max_bytes,json=localMaxBytes,proto3" json:"local_max_bytes,omitempty"`
-	Seaweedfs     *Storage_SeaweedFS `protobuf:"bytes,2,opt,name=seaweedfs,proto3" json:"seaweedfs,omitempty"`
-	Oss           *Storage_OSS       `protobuf:"bytes,3,opt,name=oss,proto3" json:"oss,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// "local" = local disk primary, "s3" = SeaweedFS (S3) primary
+	Mode string `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
+	// Primary storage capacity limit (local disk in local mode, SeaweedFS in s3 mode)
+	PrimaryMaxBytes int64 `protobuf:"varint,2,opt,name=primary_max_bytes,json=primaryMaxBytes,proto3" json:"primary_max_bytes,omitempty"`
+	// LRU eviction triggers when primary usage exceeds this percentage
+	ThresholdPercent int32 `protobuf:"varint,3,opt,name=threshold_percent,json=thresholdPercent,proto3" json:"threshold_percent,omitempty"` // default 80
+	// After eviction, reduce usage down to this percentage of threshold (default 90)
+	EvictTargetPercent int32              `protobuf:"varint,4,opt,name=evict_target_percent,json=evictTargetPercent,proto3" json:"evict_target_percent,omitempty"` // default 90
+	Seaweedfs          *Storage_SeaweedFS `protobuf:"bytes,5,opt,name=seaweedfs,proto3" json:"seaweedfs,omitempty"`
+	Oss                *Storage_OSS       `protobuf:"bytes,6,opt,name=oss,proto3" json:"oss,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Storage) Reset() {
@@ -294,9 +300,30 @@ func (*Storage) Descriptor() ([]byte, []int) {
 	return file_conf_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *Storage) GetLocalMaxBytes() int64 {
+func (x *Storage) GetMode() string {
 	if x != nil {
-		return x.LocalMaxBytes
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *Storage) GetPrimaryMaxBytes() int64 {
+	if x != nil {
+		return x.PrimaryMaxBytes
+	}
+	return 0
+}
+
+func (x *Storage) GetThresholdPercent() int32 {
+	if x != nil {
+		return x.ThresholdPercent
+	}
+	return 0
+}
+
+func (x *Storage) GetEvictTargetPercent() int32 {
+	if x != nil {
+		return x.EvictTargetPercent
 	}
 	return 0
 }
@@ -377,7 +404,7 @@ func (x *Server_GRPC) GetTimeout() *durationpb.Duration {
 
 type Data_Database struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Driver          string                 `protobuf:"bytes,1,opt,name=driver,proto3" json:"driver,omitempty"`
+	Driver          string                 `protobuf:"bytes,1,opt,name=driver,proto3" json:"driver,omitempty"` // "mysql" or "sqlite"
 	MaxIdleConns    int32                  `protobuf:"varint,2,opt,name=max_idle_conns,json=maxIdleConns,proto3" json:"max_idle_conns,omitempty"`
 	MaxOpenConns    int32                  `protobuf:"varint,3,opt,name=max_open_conns,json=maxOpenConns,proto3" json:"max_open_conns,omitempty"`
 	ConnMaxLifetime *durationpb.Duration   `protobuf:"bytes,4,opt,name=conn_max_lifetime,json=connMaxLifetime,proto3" json:"conn_max_lifetime,omitempty"`
@@ -564,16 +591,14 @@ func (x *Data_Kafka) GetCloudMigrateTopic() string {
 }
 
 type Storage_SeaweedFS struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Endpoint         string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"` // S3 API endpoint, e.g. http://seaweedfs:8333
-	Region           string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`     // usually "us-east-1"
-	Bucket           string                 `protobuf:"bytes,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
-	AccessKey        string                 `protobuf:"bytes,4,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`                       // read from env SEAWEEDFS_ACCESS_KEY
-	SecretKey        string                 `protobuf:"bytes,5,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`                       // read from env SEAWEEDFS_SECRET_KEY
-	MaxBytes         int64                  `protobuf:"varint,6,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`                         // SeaweedFS total capacity
-	ThresholdPercent int32                  `protobuf:"varint,7,opt,name=threshold_percent,json=thresholdPercent,proto3" json:"threshold_percent,omitempty"` // trigger eviction at this %
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Endpoint      string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
+	Bucket        string                 `protobuf:"bytes,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	AccessKey     string                 `protobuf:"bytes,4,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
+	SecretKey     string                 `protobuf:"bytes,5,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Storage_SeaweedFS) Reset() {
@@ -641,26 +666,12 @@ func (x *Storage_SeaweedFS) GetSecretKey() string {
 	return ""
 }
 
-func (x *Storage_SeaweedFS) GetMaxBytes() int64 {
-	if x != nil {
-		return x.MaxBytes
-	}
-	return 0
-}
-
-func (x *Storage_SeaweedFS) GetThresholdPercent() int32 {
-	if x != nil {
-		return x.ThresholdPercent
-	}
-	return 0
-}
-
 type Storage_OSS struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Endpoint        string                 `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	Bucket          string                 `protobuf:"bytes,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
-	AccessKeyId     string                 `protobuf:"bytes,3,opt,name=access_key_id,json=accessKeyId,proto3" json:"access_key_id,omitempty"`             // from env OSS_ACCESS_KEY_ID
-	AccessKeySecret string                 `protobuf:"bytes,4,opt,name=access_key_secret,json=accessKeySecret,proto3" json:"access_key_secret,omitempty"` // from env OSS_ACCESS_KEY_SECRET
+	AccessKeyId     string                 `protobuf:"bytes,3,opt,name=access_key_id,json=accessKeyId,proto3" json:"access_key_id,omitempty"`
+	AccessKeySecret string                 `protobuf:"bytes,4,opt,name=access_key_secret,json=accessKeySecret,proto3" json:"access_key_secret,omitempty"`
 	Region          string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -770,11 +781,14 @@ const file_conf_proto_rawDesc = "" +
 	"\n" +
 	"chunk_size\x18\x01 \x01(\x03R\tchunkSize\x12\x19\n" +
 	"\btemp_dir\x18\x02 \x01(\tR\atempDir\x12\x1b\n" +
-	"\tstore_dir\x18\x03 \x01(\tR\bstoreDir\"\x9f\x04\n" +
-	"\aStorage\x12&\n" +
-	"\x0flocal_max_bytes\x18\x01 \x01(\x03R\rlocalMaxBytes\x12;\n" +
-	"\tseaweedfs\x18\x02 \x01(\v2\x1d.kratos.api.Storage.SeaweedFSR\tseaweedfs\x12)\n" +
-	"\x03oss\x18\x03 \x01(\v2\x17.kratos.api.Storage.OSSR\x03oss\x1a\xdf\x01\n" +
+	"\tstore_dir\x18\x03 \x01(\tR\bstoreDir\"\xcc\x04\n" +
+	"\aStorage\x12\x12\n" +
+	"\x04mode\x18\x01 \x01(\tR\x04mode\x12*\n" +
+	"\x11primary_max_bytes\x18\x02 \x01(\x03R\x0fprimaryMaxBytes\x12+\n" +
+	"\x11threshold_percent\x18\x03 \x01(\x05R\x10thresholdPercent\x120\n" +
+	"\x14evict_target_percent\x18\x04 \x01(\x05R\x12evictTargetPercent\x12;\n" +
+	"\tseaweedfs\x18\x05 \x01(\v2\x1d.kratos.api.Storage.SeaweedFSR\tseaweedfs\x12)\n" +
+	"\x03oss\x18\x06 \x01(\v2\x17.kratos.api.Storage.OSSR\x03oss\x1a\x95\x01\n" +
 	"\tSeaweedFS\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x16\n" +
@@ -782,9 +796,7 @@ const file_conf_proto_rawDesc = "" +
 	"\n" +
 	"access_key\x18\x04 \x01(\tR\taccessKey\x12\x1d\n" +
 	"\n" +
-	"secret_key\x18\x05 \x01(\tR\tsecretKey\x12\x1b\n" +
-	"\tmax_bytes\x18\x06 \x01(\x03R\bmaxBytes\x12+\n" +
-	"\x11threshold_percent\x18\a \x01(\x05R\x10thresholdPercent\x1a\xa1\x01\n" +
+	"secret_key\x18\x05 \x01(\tR\tsecretKey\x1a\xa1\x01\n" +
 	"\x03OSS\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x16\n" +
 	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12\"\n" +

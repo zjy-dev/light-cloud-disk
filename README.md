@@ -3,11 +3,24 @@
 [![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
 [![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
 
-基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构，三级存储（本地磁盘 → SeaweedFS → 阿里云 OSS）+ LRU 自动冷迁移。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
+基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。支持**双模式部署**：轻量模式（SQLite + 本地磁盘 + 进程内 MQ）适合个人使用，完整模式（MySQL + SeaweedFS + Kafka）适合企业级扩展。两种模式均支持 LRU 冷迁移到阿里云 OSS。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
 
 **Monorepo 结构**: 后端 Go 代码在项目根目录，前端 Vue 3 SPA 在 `frontend/` 目录。
 
 ## 架构概览
+
+### 双模式部署
+
+| | Mode A: local (轻量) | Mode B: s3 (完整) |
+|--|---|---|
+| **数据库** | SQLite | MySQL 8.0 |
+| **消息队列** | 进程内 goroutine channel | Kafka |
+| **主存储** | 本地磁盘 | SeaweedFS |
+| **文件下载** | Gateway 流式代理 | 预签名 URL 直连 |
+| **冷存储** | 阿里云 OSS (可选) | 阿里云 OSS |
+| **启动命令** | `docker compose --env-file .env.local up -d` | `docker compose --env-file .env.s3 --profile s3 up -d` |
+
+### 完整模式架构图 (Mode B)
 
 ```
                     ┌──────────────────────┐
@@ -35,6 +48,31 @@
                                                └──────────┘
 ```
 
+### 轻量模式架构图 (Mode A)
+
+```
+                    ┌──────────────────────┐
+                    │    Gin API Gateway   │
+                    │     (HTTP :8080)     │
+                    └────┬────────────┬────┘
+                         │  gRPC      │  gRPC
+               ┌─────────┘            └──────────┐
+               ▼                                  ▼
+    ┌─────────────────────┐           ┌─────────────────────┐
+    │   User Service      │           │   File Service      │
+    │   (gRPC :9001)      │◄──gRPC────│   (gRPC :9002)      │
+    │   SQLite            │           │   SQLite + 本地磁盘  │
+    └─────────────────────┘           └──────────┬──────────┘
+                                                 │
+    ← ─ ─ ─ Consul 服务发现 ─ ─ ─ →            Redis
+                                                 │
+                                      goroutine MQ (进程内)
+                                                 │
+                                          ┌──────┴──────┐
+                                          │ 阿里云 OSS   │ (可选冷迁移)
+                                          └─────────────┘
+```
+
 - **User Service**: 用户注册/登录、信息管理、存储配额 (gRPC-only, Kratos v2)
 - **File Service**: 分块上传、秒传、文件管理、回收站、分享、三级存储 (gRPC-only, Kratos v2)
 - **API Gateway**: HTTP 路由、JWT 认证、CORS、gRPC 代理 (Gin)
@@ -52,8 +90,9 @@
 | 服务发现 | Consul | 1.19 |
 | 通信协议 | gRPC (服务间) + HTTP (客户端) | - |
 | ORM | GORM | v1.25.12 |
+| 数据库 | MySQL 8.0 / SQLite (双模式) | - |
 | 缓存 | Redis | v8.11.5 |
-| 消息队列 | Kafka | v3.7 |
+| 消息队列 | Kafka / goroutine channel (双模式) | v3.7 |
 | 对象存储 (温) | SeaweedFS (S3 API) | latest |
 | 对象存储 (冷) | 阿里云 OSS | SDK v1.4 |
 | 依赖注入 | Wire | v0.6.0 |
@@ -82,8 +121,11 @@
 - [x] 分块上传 (大文件支持，5MB/块)
 - [x] 秒传 (基于 MD5 去重)
 - [x] 断点续传 (Redis 记录上传状态)
-- [x] 三级存储 (本地磁盘 → SeaweedFS → 阿里云 OSS)
-- [x] LRU 自动冷迁移 (SeaweedFS 用量超阈值 → Kafka → worker 迁入 OSS)
+- [x] 双模式存储 (Mode A: 本地磁盘主存 / Mode B: SeaweedFS 主存)
+- [x] LRU 自动冷迁移 (主存超阈值 → MQ → 迁入 OSS)
+- [x] 可插拔数据库 (MySQL / SQLite via DB_DRIVER)
+- [x] 可插拔消息队列 (Kafka / 进程内 goroutine channel)
+- [x] 本地文件流式下载 (StreamFileContent server-streaming RPC)
 - [x] 磁盘满保护 (CheckUpload 返回 disk_full → 503)
 - [x] 磁盘用量查询 (GetDiskUsage API)
 - [x] 文件夹管理 (树形结构)
@@ -91,7 +133,7 @@
 - [x] 回收站 (软删除 + 恢复)
 - [x] 文件分享 (链接 + 提取码 + 过期时间)
 - [x] 文件移动/重命名
-- [x] 下载链接获取 (按 StorageType 签发 SeaweedFS/OSS 预签名 URL)
+- [x] 下载链接获取 (按 StorageType 签发预签名 URL 或本地流式代理)
 
 ### 网关
 - [x] JWT 认证中间件 (保护路由)
@@ -186,7 +228,11 @@ make wire-file    # 生成文件服务依赖注入
 
 ### 配置环境变量
 ```bash
-cp .env.example .env
+# Mode A: 轻量模式 (SQLite + 本地磁盘)
+cp .env.local .env
+
+# Mode B: 完整模式 (MySQL + SeaweedFS + Kafka)
+cp .env.s3 .env
 # Edit .env and fill in actual values
 ```
 
@@ -210,12 +256,17 @@ make run-gateway    # 启动 API 网关 (HTTP :8080)
 
 ### 容器化运行
 ```bash
-docker-compose up -d -- build   # 或 podman-compose up -d --build
+# Mode A: 轻量模式 (SQLite + 本地磁盘，无需 MySQL/Kafka/SeaweedFS)
+docker compose --env-file .env.local up -d --build
+
+# Mode B: 完整模式 (MySQL + SeaweedFS + Kafka + file-worker)
+docker compose --env-file .env.s3 --profile s3 up -d --build
 ```
 
 说明：
+- 使用 Compose profiles，`--profile s3` 会额外启动 MySQL, Kafka, SeaweedFS, file-worker
+- 轻量模式只启动 Consul + Redis + user-service + file-service + gateway + frontend
 - 前端镜像采用多阶段构建（容器内执行 `pnpm install && pnpm build`），不再依赖宿主机预先生成 `frontend/dist/`
-- `docker-compose.yml` 已包含前端、网关、用户服务、文件服务、Consul、MySQL、Redis、Kafka 全量服务
 
 ### 运行测试
 ```bash
@@ -256,6 +307,7 @@ go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 | DELETE | /api/v1/files | 删除文件 (移入回收站) |
 | PUT | /api/v1/file/move | 移动文件 |
 | GET | /api/v1/file/download/:file_id | 获取下载链接 (预签名 URL) |
+| GET | /api/v1/file/stream/:file_id | 流式下载 (本地模式) |
 | GET | /api/v1/files/search | 搜索文件 |
 | GET | /api/v1/disk-usage | 磁盘/SeaweedFS 用量 |
 | GET | /api/v1/trash | 回收站列表 |
@@ -290,24 +342,32 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| cloud-migrate | FileService (LRU 淘汰) | file-worker | SeaweedFS → 阿里云 OSS 冷迁移 |
-| file-thumbnail | FileService | file-worker (ThumbnailWorker) | 生成文件缩略图 |
+| cloud-migrate | FileService (LRU 淘汰) | file-worker / goroutine MQ | 主存 → 阿里云 OSS 冷迁移 |
+| file-thumbnail | FileService | file-worker / goroutine MQ | 生成文件缩略图 |
 
-客户端使用 `segmentio/kafka-go`，未配置 Kafka 时自动降级为 `noopProducer`。
+- **Mode B**: `segmentio/kafka-go` 生产端 + 独立 `file-worker` 消费进程
+- **Mode A**: 进程内 goroutine channel (256 缓冲)，替代 Kafka + file-worker
+- 未配置 Kafka 且无 SeaweedFS 时，自动使用 goroutine MQ
 
 ## 环境变量
 
 | 变量 | 说明 | 服务 | 示例 |
 |------|------|------|------|
-| DB_HOST | 数据库地址 | user, file | localhost |
-| DB_PORT | 数据库端口 | user, file | 3306 |
-| DB_USER | 数据库用户 | user, file | root |
-| DB_PASSWORD | 数据库密码 | user, file | *** |
+| DB_DRIVER | 数据库驱动 (mysql/sqlite) | user, file | sqlite |
+| SQLITE_PATH | SQLite 文件路径 | user, file | /app/data/cloud_disk.db |
+| DB_HOST | MySQL 地址 | user, file | localhost |
+| DB_PORT | MySQL 端口 | user, file | 3306 |
+| DB_USER | MySQL 用户 | user, file | root |
+| DB_PASSWORD | MySQL 密码 | user, file | *** |
 | DB_NAME | 数据库名 | user, file | cloud_disk |
 | REDIS_ADDR | Redis 地址 | file | localhost:6379 |
 | CONSUL_ADDR | Consul 地址 | user, file, gateway | localhost:8500 |
 | JWT_SECRET | JWT 密钥 | gateway | *** |
 | GATEWAY_ADDR | 网关监听地址 | gateway | :8080 |
+| STORAGE_MODE | 存储模式 | file | local / s3 |
+| PRIMARY_MAX_BYTES | 主存上限 (字节) | file | 10737418240 (10GB) |
+| FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
+| FILE_STORE_DIR | 本地文件存储目录 | file | /app/store |
 | SEAWEEDFS_ENDPOINT | SeaweedFS S3 端点 | file, worker | http://seaweedfs:8333 |
 | SEAWEEDFS_BUCKET | SeaweedFS Bucket | file, worker | light-cloud-disk |
 | SEAWEEDFS_ACCESS_KEY | SeaweedFS AK | file, worker | - |
@@ -315,22 +375,17 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | OSS_ENDPOINT | 阿里云 OSS 端点 | file, worker | oss-cn-hangzhou.aliyuncs.com |
 | OSS_ACCESS_KEY_ID | OSS AK | file, worker | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file, worker | *** |
-| LOCAL_MAX_BYTES | 本地磁盘上限 | file | 10737418240 (10GB) |
-| SEAWEEDFS_MAX_BYTES | SeaweedFS 上限 | file | 53687091200 (50GB) |
-| SEAWEEDFS_THRESHOLD_PCT | 淘汰阈值% | file | 80 |
-| KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
+| KAFKA_BROKERS | Kafka 地址 (空则用 goroutine MQ) | file, file-worker | localhost:9092 |
 | KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
 | KAFKA_CLOUD_MIGRATE_TOPIC | 冷迁移 topic | file-worker | cloud-migrate |
 | KAFKA_THUMBNAIL_TOPIC | 缩略图 topic | file-worker | file-thumbnail |
-| FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
-| FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
 
 ## 测试覆盖
 
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 33 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
+| app/file/internal/biz | 单元测试 | 38 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
 | app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
@@ -352,6 +407,7 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 ## 文档
 
 - [微服务架构设计](docs/architecture.md)
+- [双模式存储架构](docs/dual-mode-storage.md)
 - [三级存储架构](docs/three-tier-storage.md)
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
@@ -362,6 +418,17 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - [前端架构与设计](docs/frontend.md)
 
 ## 更新日志
+
+### v6.0.0 (2026)
+- **双模式存储架构**: Mode A (轻量: SQLite + 本地磁盘 + goroutine MQ) / Mode B (完整: MySQL + SeaweedFS + Kafka)
+- 可插拔数据库: MySQL / SQLite (DB_DRIVER 环境变量切换)
+- 可插拔消息队列: Kafka / 进程内 goroutine channel (自动根据 KAFKA_BROKERS 选择)
+- 本地文件流式下载: StreamFileContent server-streaming RPC + Gateway 流式代理
+- Docker Compose profiles 双模式: `--profile s3` 启动完整模式，默认轻量模式
+- 统一存储配置: STORAGE_MODE + PRIMARY_MAX_BYTES 控制主存行为
+- Dockerfile CGO 支持 (gcc + musl-dev) 以编译 SQLite
+- 前端双模式下载: local:// URL 自动走 blob 流式下载
+- 88 个后端单元测试 + 50 个前端测试
 
 ### v5.0.0 (2026)
 - **三级存储架构**: 本地磁盘(分块暂存) → SeaweedFS(温数据) → 阿里云 OSS(冷数据)

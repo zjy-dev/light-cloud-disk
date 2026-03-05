@@ -20,6 +20,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/segmentio/kafka-go"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -106,14 +107,26 @@ func main() {
 }
 
 func initDeps(helper *log.Helper) *workerDeps {
-	// Initialize MySQL connection
-	dsn := os.Getenv("DB_USER") + ":" + os.Getenv("DB_PASSWORD") +
-		"@tcp(" + os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT") + ")/" +
-		os.Getenv("DB_NAME") + "?charset=utf8mb4&parseTime=True&loc=Local"
-
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		helper.Fatalf("Failed to connect to MySQL: %v", err)
+	// Initialize database connection (MySQL or SQLite)
+	var db *gorm.DB
+	var err error
+	driver := envOrDefault("DB_DRIVER", "mysql")
+	switch driver {
+	case "sqlite":
+		dbPath := envOrDefault("SQLITE_PATH", "./data.db")
+		db, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+		if err != nil {
+			helper.Fatalf("Failed to open SQLite: %v", err)
+		}
+		helper.Infof("Opened SQLite database at %s", dbPath)
+	default:
+		dsn := os.Getenv("DB_USER") + ":" + os.Getenv("DB_PASSWORD") +
+			"@tcp(" + os.Getenv("DB_HOST") + ":" + os.Getenv("DB_PORT") + ")/" +
+			os.Getenv("DB_NAME") + "?charset=utf8mb4&parseTime=True&loc=Local"
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		if err != nil {
+			helper.Fatalf("Failed to connect to MySQL: %v", err)
+		}
 	}
 
 	// Initialize Redis connection

@@ -1,6 +1,9 @@
 # Build stage uses vendor mode to avoid external network access
 FROM docker.io/library/golang:1.25-alpine AS builder
 
+# gcc + musl-dev needed for CGO (SQLite driver)
+RUN apk add --no-cache gcc musl-dev
+
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -18,7 +21,7 @@ RUN set -e; \
     else \
       BUILD_PATH=./app/${SERVICE}/cmd; \
     fi; \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=1 GOOS=linux go build \
       -mod=vendor \
       -ldflags="-s -w -X main.Version=${VERSION}" \
       -o /app/server \
@@ -39,6 +42,9 @@ WORKDIR /app
 
 COPY --from=builder /app/server .
 COPY --from=builder /app/configs/ ./configs/
+
+# Ensure directories exist for local mode (SQLite DB + file store)
+RUN mkdir -p /app/data /app/tmp /app/store
 
 ARG SERVICE=user
 ENV SERVICE=${SERVICE}

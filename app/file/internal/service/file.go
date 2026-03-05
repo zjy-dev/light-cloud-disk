@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"io"
 
 	"github.com/go-kratos/kratos/v2/log"
+	"google.golang.org/grpc"
 
 	pb "github.com/J-Y-Zhang/light-cloud-disk/api/file/v1"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
@@ -128,12 +130,16 @@ func (s *FileService) ListTrash(ctx context.Context, req *pb.ListTrashRequest) (
 
 	pbFiles := make([]*pb.TrashFileInfo, len(files))
 	for i, f := range files {
+		var deletedAt int64
+		if f.DeletedAt != nil {
+			deletedAt = f.DeletedAt.Unix()
+		}
 		pbFiles[i] = &pb.TrashFileInfo{
 			Id:        f.ID,
 			Name:      f.Name,
 			Size:      f.Size,
 			IsFolder:  f.IsFolder,
-			DeletedAt: f.DeletedAt.Unix(),
+			DeletedAt: deletedAt,
 		}
 	}
 
@@ -206,16 +212,53 @@ func (s *FileService) SearchFiles(ctx context.Context, req *pb.SearchFilesReques
 }
 
 func (s *FileService) GetDiskUsage(ctx context.Context, _ *pb.GetDiskUsageRequest) (*pb.GetDiskUsageReply, error) {
-	localUsed, localMax, swfUsed, swfMax, err := s.uc.GetDiskUsage(ctx)
+	primaryUsed, primaryMax, primaryType, err := s.uc.GetDiskUsage(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &pb.GetDiskUsageReply{
-		LocalUsedBytes:     localUsed,
-		LocalMaxBytes:      localMax,
-		SeaweedfsUsedBytes: swfUsed,
-		SeaweedfsMaxBytes:  swfMax,
+		PrimaryUsedBytes: primaryUsed,
+		PrimaryMaxBytes:  primaryMax,
+		PrimaryType:      primaryType,
 	}, nil
+}
+
+// StreamFileContent streams a locally-stored file back to the caller in 64 KB
+// chunks. The first message includes metadata (file name, size, content type);
+// subsequent messages carry only raw bytes.
+func (s *FileService) StreamFileContent(req *pb.StreamFileContentRequest, stream grpc.ServerStreamingServer[pb.StreamFileContentReply]) error {
+	rc, name, size, contentType, err := s.uc.OpenLocalFile(stream.Context(), req.UserId, req.FileId)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	const chunkSize = 64 * 1024
+
+	buf := make([]byte, chunkSize)
+	first := true
+	for {
+		n, readErr := rc.Read(buf)
+		if n > 0 {
+			msg := &pb.StreamFileContentReply{Chunk: buf[:n]}
+			if first {
+				msg.FileName = name
+				msg.FileSize = size
+				msg.ContentType = contentType
+				first = false
+			}
+			if sendErr := stream.Send(msg); sendErr != nil {
+				return sendErr
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return nil
 }
 
 func (s *FileService) fileToProto(f *biz.File) *pb.FileInfo {

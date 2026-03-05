@@ -24,15 +24,16 @@ upload:
   store_dir: ./store
 
 storage:
-  local_max_bytes: 10737418240  # 10 GB
+  mode: ${STORAGE_MODE:local}             # "local" or "s3"
+  primary_max_bytes: 10737418240          # 10 GB default
+  threshold_percent: 80
+  evict_target_percent: 90
   seaweedfs:
     endpoint: ${SEAWEEDFS_ENDPOINT:}
     region: us-east-1
     bucket: light-cloud-disk
     access_key: ${SEAWEEDFS_ACCESS_KEY:}
     secret_key: ${SEAWEEDFS_SECRET_KEY:}
-    max_bytes: 53687091200  # 50 GB
-    threshold_percent: 80
   oss:
     endpoint: ${OSS_ENDPOINT:}
     bucket: ${OSS_BUCKET:light-cloud-disk}

@@ -117,7 +117,21 @@ export const useFileStore = defineStore('file', () => {
 
   async function downloadFile(fileId: number) {
     const { data } = await fileApi.getDownloadURL(fileId)
-    window.open(data.downloadUrl, '_blank')
+    const url = data.downloadUrl
+
+    // Relative URLs (local-mode stream) require auth header, so fetch as blob
+    if (url.startsWith('/')) {
+      const { data: blob } = await fileApi.downloadBlob(url)
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = data.fileName || 'download'
+      a.click()
+      URL.revokeObjectURL(blobUrl)
+    } else {
+      // External presigned URL (S3 / OSS) - open directly
+      window.open(url, '_blank')
+    }
   }
 
   function toggleSelect(id: number) {

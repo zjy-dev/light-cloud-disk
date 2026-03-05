@@ -196,6 +196,20 @@ func (m *MockObjectStorage) PresignGetURL(ctx context.Context, key string, expir
 	args := m.Called(ctx, key, expires)
 	return args.String(0), args.Error(1)
 }
+func (m *MockObjectStorage) InitMultipartUpload(ctx context.Context, key string) (string, error) {
+	args := m.Called(ctx, key)
+	return args.String(0), args.Error(1)
+}
+func (m *MockObjectStorage) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error) {
+	args := m.Called(ctx, key, uploadID, partNumber, expires)
+	return args.String(0), args.Error(1)
+}
+func (m *MockObjectStorage) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error {
+	return m.Called(ctx, key, uploadID, parts).Error(0)
+}
+func (m *MockObjectStorage) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	return m.Called(ctx, key, uploadID).Error(0)
+}
 
 // ---------------------------------------------------------------------------
 // Mock CloudStorage (OSS)
@@ -222,15 +236,30 @@ func (m *MockCloudStorage) PresignGetURL(ctx context.Context, key string, expire
 	args := m.Called(ctx, key, expires)
 	return args.String(0), args.Error(1)
 }
+func (m *MockCloudStorage) InitMultipartUpload(ctx context.Context, key string) (string, error) {
+	args := m.Called(ctx, key)
+	return args.String(0), args.Error(1)
+}
+func (m *MockCloudStorage) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error) {
+	args := m.Called(ctx, key, uploadID, partNumber, expires)
+	return args.String(0), args.Error(1)
+}
+func (m *MockCloudStorage) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error {
+	return m.Called(ctx, key, uploadID, parts).Error(0)
+}
+func (m *MockCloudStorage) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	return m.Called(ctx, key, uploadID).Error(0)
+}
 
 // ---------------------------------------------------------------------------
 // Test helper constructors
 // ---------------------------------------------------------------------------
 
 var defaultStorageCfg = &StorageConfig{
-	LocalMaxBytes:         10 * 1024 * 1024 * 1024, // 10GB
-	SeaweedFSMaxBytes:     50 * 1024 * 1024 * 1024, // 50GB
-	SeaweedFSThresholdPct: 80,
+	Mode:            ModeS3,
+	PrimaryMaxBytes: 50 * 1024 * 1024 * 1024, // 50GB (SeaweedFS as primary)
+	ThresholdPct:    80,
+	EvictTargetPct:  90,
 }
 
 func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUsecase {
@@ -247,7 +276,7 @@ func newTestFileUsecase(repo *MockFileRepo, userClient *MockUserClient) *FileUse
 	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	cloudStore.On("PresignGetURL", mock.Anything, mock.Anything, mock.Anything).Return("http://oss/presigned", nil).Maybe()
 
-	return NewFileUsecase(repo, userClient, mq, objStore, cloudStore, defaultStorageCfg, log.DefaultLogger)
+	return NewFileUsecase(repo, userClient, mq, objStore, cloudStore, defaultStorageCfg, "/tmp/test-store", log.DefaultLogger)
 }
 
 type testDeps struct {
@@ -267,7 +296,7 @@ func newTestDeps() *testDeps {
 		objStore:   new(MockObjectStorage),
 		cloudStore: new(MockCloudStorage),
 	}
-	d.uc = NewFileUsecase(d.repo, d.userClient, d.mq, d.objStore, d.cloudStore, defaultStorageCfg, log.DefaultLogger)
+	d.uc = NewFileUsecase(d.repo, d.userClient, d.mq, d.objStore, d.cloudStore, defaultStorageCfg, "/tmp/test-store", log.DefaultLogger)
 	return d
 }
 
@@ -299,7 +328,7 @@ func TestCheckUpload_ResumeUpload(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
+	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32{0, 1, 3}, nil)
 
 	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
@@ -317,7 +346,7 @@ func TestCheckUpload_NewUpload(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
+	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(0), nil)
 	repo.On("GetUploadedChunks", ctx, "abc123").Return([]int32(nil), nil)
 
 	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
@@ -335,8 +364,8 @@ func TestCheckUpload_DiskFull(t *testing.T) {
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Mock usage close to limit
-	repo.On("GetDiskUsage", ctx, "local").Return(defaultStorageCfg.LocalMaxBytes-100, nil)
+	// Mock primary storage usage close to limit (mode=s3 → "seaweedfs" counter)
+	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(defaultStorageCfg.PrimaryMaxBytes-100, nil)
 
 	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5) // 1024 > 100 remaining
 
@@ -681,16 +710,14 @@ func TestGetDiskUsage(t *testing.T) {
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(1024), nil)
 	repo.On("GetDiskUsage", ctx, "seaweedfs").Return(int64(2048), nil)
 
-	localUsed, localMax, swfUsed, swfMax, err := uc.GetDiskUsage(ctx)
+	primaryUsed, primaryMax, primaryType, err := uc.GetDiskUsage(ctx)
 
 	assert.NoError(t, err)
-	assert.Equal(t, int64(1024), localUsed)
-	assert.Equal(t, defaultStorageCfg.LocalMaxBytes, localMax)
-	assert.Equal(t, int64(2048), swfUsed)
-	assert.Equal(t, defaultStorageCfg.SeaweedFSMaxBytes, swfMax)
+	assert.Equal(t, int64(2048), primaryUsed)
+	assert.Equal(t, defaultStorageCfg.PrimaryMaxBytes, primaryMax)
+	assert.Equal(t, "seaweedfs", primaryType)
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +865,8 @@ func TestMaybeEvictToCloud_TriggersWhenAboveThreshold(t *testing.T) {
 	d := newTestDeps()
 	ctx := context.Background()
 
-	// 50GB max, 80% threshold = 40GB. Pass 42GB to trigger eviction
+	// 50GB max, 80% threshold = 40GB. Pass 42GB to trigger eviction.
+	// With mode=s3, primary type is "seaweedfs".
 	d.repo.On("FindLRUStores", ctx, StorageSeaweedFS, 100).Return([]*FileStore{
 		{FileMD5: "file1", StorePath: "file1.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB
 		{FileMD5: "file2", StorePath: "file2.bin", Size: 1 * 1024 * 1024 * 1024}, // 1 GB
@@ -857,6 +885,112 @@ func TestMaybeEvictToCloud_NoOp_BelowThreshold(t *testing.T) {
 	d.uc.maybeEvictToCloud(ctx, 20*1024*1024*1024) // 20 GB < 40 GB threshold
 
 	d.mq.AssertNotCalled(t, "SendCloudMigrateMessage", mock.Anything, mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// Mode A (local) specific tests
+// ---------------------------------------------------------------------------
+
+func TestCheckUpload_LocalMode_DiskFull(t *testing.T) {
+	repo := new(MockFileRepo)
+	userClient := new(MockUserClient)
+
+	localCfg := &StorageConfig{
+		Mode:            ModeLocal,
+		PrimaryMaxBytes: 10 * 1024 * 1024 * 1024, // 10GB
+		ThresholdPct:    80,
+		EvictTargetPct:  90,
+	}
+
+	mq := new(MockMessageProducer)
+	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
+	mq.On("Close").Return(nil).Maybe()
+	objStore := new(MockObjectStorage)
+	cloudStore := new(MockCloudStorage)
+
+	uc := NewFileUsecase(repo, userClient, mq, objStore, cloudStore, localCfg, "/tmp/test-store", log.DefaultLogger)
+	ctx := context.Background()
+
+	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
+	repo.On("GetDiskUsage", ctx, "local").Return(localCfg.PrimaryMaxBytes-100, nil)
+
+	canFast, chunks, diskFull, err := uc.CheckUpload(ctx, "abc123", 1024, 5)
+
+	assert.NoError(t, err)
+	assert.False(t, canFast)
+	assert.Nil(t, chunks)
+	assert.True(t, diskFull)
+	repo.AssertExpectations(t)
+}
+
+func TestGetDiskUsage_LocalMode(t *testing.T) {
+	repo := new(MockFileRepo)
+
+	localCfg := &StorageConfig{
+		Mode:            ModeLocal,
+		PrimaryMaxBytes: 10 * 1024 * 1024 * 1024,
+		ThresholdPct:    80,
+		EvictTargetPct:  90,
+	}
+
+	mq := new(MockMessageProducer)
+	mq.On("Close").Return(nil).Maybe()
+	uc := NewFileUsecase(repo, new(MockUserClient), mq, new(MockObjectStorage), new(MockCloudStorage), localCfg, "/tmp/test-store", log.DefaultLogger)
+	ctx := context.Background()
+
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(5000), nil)
+
+	primaryUsed, primaryMax, primaryType, err := uc.GetDiskUsage(ctx)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5000), primaryUsed)
+	assert.Equal(t, localCfg.PrimaryMaxBytes, primaryMax)
+	assert.Equal(t, "local", primaryType)
+}
+
+func TestGetDownloadURL_LocalStorage(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindByID", ctx, int64(1)).Return(&File{
+		ID: 1, UserID: 100, Name: "file.zip", FileMD5: "abc123",
+	}, nil)
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal,
+	}, nil)
+	d.repo.On("UpdateLastAccessed", ctx, "abc123").Return(nil)
+
+	url, name, err := d.uc.GetDownloadURL(ctx, 100, 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, "local://abc123.zip", url)
+	assert.Equal(t, "file.zip", name)
+}
+
+func TestMaybeEvictToCloud_LocalMode(t *testing.T) {
+	repo := new(MockFileRepo)
+	mq := new(MockMessageProducer)
+
+	localCfg := &StorageConfig{
+		Mode:            ModeLocal,
+		PrimaryMaxBytes: 10 * 1024 * 1024 * 1024, // 10GB
+		ThresholdPct:    80,
+		EvictTargetPct:  90,
+	}
+
+	uc := NewFileUsecase(repo, new(MockUserClient), mq, new(MockObjectStorage), new(MockCloudStorage), localCfg, "/tmp/test-store", log.DefaultLogger)
+	ctx := context.Background()
+
+	// Threshold = 10GB * 80% = 8GB. Pass 9GB to trigger eviction.
+	repo.On("FindLRUStores", ctx, StorageLocal, 100).Return([]*FileStore{
+		{FileMD5: "local1", StorePath: "local1.bin", Size: 500 * 1024 * 1024},
+	}, nil)
+	mq.On("SendCloudMigrateMessage", ctx, mock.AnythingOfType("*biz.CloudMigrateMessage")).Return(nil)
+
+	uc.maybeEvictToCloud(ctx, 9*1024*1024*1024) // 9 GB > 8 GB threshold
+
+	mq.AssertCalled(t, "SendCloudMigrateMessage", ctx, mock.Anything)
 }
 
 // ---------------------------------------------------------------------------

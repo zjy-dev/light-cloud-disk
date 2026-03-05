@@ -28,7 +28,10 @@
 ## 项目架构
 
 ```
-微服务架构:
+微服务架构 (双模式部署):
+
+Mode A (local): SQLite + 本地磁盘 + goroutine MQ
+Mode B (s3):    MySQL + SeaweedFS + Kafka
 
     Client (HTTP)
          │
@@ -43,17 +46,18 @@
 │  User Service  │ │  File Service  │
 │  (gRPC :9001)  │◄│  (gRPC :9002)  │
 │  Kratos v2     │ │  Kratos v2     │
+│  MySQL/SQLite  │ │  MySQL/SQLite  │
 └───────┬────────┘ └──┬────┬───┬───┘
         │             │    │   │
         ▼             ▼    ▼   ▼
-    ┌────────┐   ┌──────┐ ┌─────┐ ┌───────────┐
-    │ MySQL  │   │MySQL │ │Redis│ │ SeaweedFS │
-    └────────┘   └──────┘ └─────┘ └───────────┘
+    ┌────────┐   ┌──────┐ ┌─────┐ ┌───────────────────────┐
+    │  DB    │   │  DB  │ │Redis│ │ 本地磁盘 / SeaweedFS  │
+    └────────┘   └──────┘ └─────┘ └───────────────────────┘
 
     ← ─ ─ Consul 服务发现 ─ ─ →
 
-    File Service ──→ Kafka ──→ file-worker ──→ 阿里云 OSS
-    (cloud-migrate topic)      (SeaweedFS → OSS 冷迁移)
+    Mode A: File Service ──→ goroutine channel ──→ 阿里云 OSS
+    Mode B: File Service ──→ Kafka ──→ file-worker ──→ 阿里云 OSS
 ```
 
 每个 Kratos 服务内部采用 Clean Architecture 分层:
@@ -84,9 +88,11 @@
 |------|------|
 | `go.mod` / `go.sum` | Go module 定义 (`github.com/J-Y-Zhang/light-cloud-disk`)，锁定全部依赖版本 |
 | `Makefile` | 统一构建入口：`make build` / `make test` / `make api` / `make wire` / `make run-*` / `make fe-*` / `make image-*` / `make infra-up` 等 |
-| `Dockerfile` | 统一多阶段构建，通过 `--build-arg SERVICE=user\|file\|gateway\|worker` 编译 4 种服务到同一镜像规格 |
-| `docker-compose.yml` | 全栈容器编排 (frontend / gateway / user / file / file-worker / consul / mysql / redis / kafka) |
-| `.env.example` | 环境变量模板，复制为 `.env` 供本地/容器使用 |
+| `Dockerfile` | 统一多阶段构建 (CGO_ENABLED=1 支持 SQLite)，通过 `--build-arg SERVICE=user\|file\|gateway\|worker` 编译 4 种服务到同一镜像规格 |
+| `docker-compose.yml` | 双模式容器编排：profiles 机制支持 local/s3 两种部署模式 |
+| `.env.example` | 环境变量模板 |
+| `.env.local` | 轻量模式环境变量 (SQLite + 本地磁盘) |
+| `.env.s3` | 完整模式环境变量 (MySQL + SeaweedFS + Kafka) |
 | `.dockerignore` | Docker 构建排除规则；注意 `vendor/` 有意保留以支持离线构建 |
 | `.gitignore` | Git 忽略规则 (`bin/`、`/cmd`、`/worker`、`frontend/dist/`、`.env`、`coverage.out` 等) |
 | `README.md` | 项目 README，面向外部用户和面试官 |
@@ -100,7 +106,7 @@
 | `app/` | **核心业务代码**，包含三个微服务 + 一个独立 Worker 进程 |
 | `vendor/` | `go mod vendor` 生成的依赖源码副本；Dockerfile 用 `-mod=vendor` 做**零网络离线构建**，保证 CI/本地/容器三者一致。`.dockerignore` 故意不排除此目录 |
 | `third_party/` | 第三方 proto (google/api annotations)，供 `protoc` 编译时引用 |
-| `docs/` | 面试 / 设计文档 (architecture / gateway / chunk-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
+| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / three-tier-storage / gateway / chunk-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
 | `frontend/` | Vue 3 前端 SPA，独立 pnpm 项目；拥有自己的 `Dockerfile`（Node 构建 → Nginx 运行） |
 | `.github/workflows/` | `ci.yml`（Push/PR → 后端测试 + 前端测试 + Compose 冒烟 + 构建 + GHCR 推送）、`release.yml`（tag → 多架构二进制 → GitHub Release） |
 
@@ -160,12 +166,15 @@ app/
 │       ├── biz/
 │       │   ├── biz.go
 │       │   ├── file.go          # FileUsecase + FileRepo/UserClient/MessageProducer 接口
-│       │   └── file_test.go     # 30 个单元测试
+│       │   └── file_test.go     # 38 个单元测试
 │       ├── data/
-│       │   ├── data.go          # GORM + Redis 初始化
+│       │   ├── data.go          # GORM (MySQL/SQLite) + Redis 初始化
 │       │   ├── file.go          # FileRepo 实现 (GORM + Redis)
 │       │   ├── user_client.go   # UserClient 实现 (gRPC → user-service)
-│       │   ├── kafka.go         # kafkaProducer / noopProducer 实现
+│       │   ├── kafka.go         # kafkaProducer + NewMessageProducer 工厂
+│       │   ├── mq_goroutine.go  # goroutineMQ (进程内 channel 替代 Kafka)
+│       │   ├── seaweedfs.go     # ObjectStorage 实现 (aws-sdk-go-v2/s3)
+│       │   ├── oss.go           # CloudStorage 实现 (alibabacloud-oss-go-sdk-v2)
 │       │   └── file_integration_test.go  # 7 个集成测试
 │       ├── service/
 │       │   ├── service.go
@@ -188,7 +197,7 @@ app/
         ├── handler/
         │   ├── user.go          # 用户相关 HTTP → gRPC 处理器
         │   ├── file.go          # 文件相关 HTTP → gRPC 处理器
-        │   └── handler_test.go  # 13 个单元测试
+        │   └── handler_test.go  # 15 个单元测试
         └── middleware/
             ├── jwt.go           # JWT 认证中间件
             ├── cors.go          # CORS + Logger 中间件
@@ -246,7 +255,7 @@ frontend/
 ### 文件服务 (app/file/internal/biz/file.go)
 - [x] CheckUpload - 秒传/断点续传检查 + 磁盘满检测
 - [x] SaveChunk - 保存分块 (本地磁盘 + Redis 用量计数)
-- [x] MergeChunks - 合并分块 → 上传 SeaweedFS (失败兜底 OSS) → UserClient.UpdateStorageUsed → 异步 LRU 淘汰
+- [x] MergeChunks - 合并分块 → 双模式上传 (local: 本地磁盘 / s3: SeaweedFS，失败兜底 OSS) → UserClient.UpdateStorageUsed → 异步 LRU 淘汰
 - [x] ListFiles - 文件列表
 - [x] CreateFolder - 创建文件夹
 - [x] RenameFile - 重命名
@@ -258,18 +267,20 @@ frontend/
 - [x] CreateShare - 创建分享
 - [x] GetShare - 获取分享内容
 - [x] SearchFiles - 搜索文件
-- [x] GetDownloadURL - 按 StorageType 签发预签名 URL
-- [x] GetDiskUsage - 查询本地/SeaweedFS 磁盘用量
-- [x] maybeEvictToCloud - LRU 淘汰 (SeaweedFS → OSS)
+- [x] GetDownloadURL - 按 StorageType 签发预签名 URL 或 local:// URL
+- [x] OpenLocalFile - 打开本地文件用于 streaming
+- [x] GetDiskUsage - 查询主存/冷存磁盘用量
+- [x] maybeEvictToCloud - LRU 淘汰 (主存 → OSS)
 
 ### API 网关 (app/gateway/)
 - [x] HTTP→gRPC 代理 (所有用户/文件操作)
 - [x] JWT 认证中间件
 - [x] CORS 中间件
 - [x] Consul 服务发现客户端
+- [x] StreamFile - 本地模式流式文件下载 (gRPC server-streaming → HTTP 流)
 
-### file-worker (app/file/cmd/worker/)
-- [x] Kafka 消费：CloudMigrateWorker (cloud-migrate topic) — SeaweedFS→OSS 数据搬迁 + DB/Redis 更新
+### file-worker (app/file/cmd/worker/) — Mode B only
+- [x] Kafka 消费：CloudMigrateWorker (cloud-migrate topic) — 主存→OSS 数据搬迁 + DB/Redis 更新
 - [x] Kafka 消费：ThumbnailWorker (file-thumbnail topic) — 缩略图生成 (stub)
 
 ## 测试策略
@@ -277,7 +288,7 @@ frontend/
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 33 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
+| app/file/internal/biz | 单元测试 | 38 | Mock FileRepo + UserClient + MessageProducer + ObjectStorage + CloudStorage |
 | app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS 中间件 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
@@ -285,7 +296,7 @@ frontend/
 
 运行测试:
 ```bash
-go test ./...                              # 全部单元测试 (66 个)
+go test ./...                              # 全部单元测试 (76 个)
 go test -tags=integration ./...            # 包含集成测试 (需要基础设施)
 ```
 
@@ -294,17 +305,19 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - **Gateway → User Service**: 通过 Consul 发现 `user-service`，gRPC 调用
 - **Gateway → File Service**: 通过 Consul 发现 `file-service`，gRPC 调用
 - **File Service → User Service**: 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` RPC
-- **File Service → Kafka**: MergeChunks 完成后异步 `maybeEvictToCloud()` 发送 CloudMigrateMessage / 媒体文件发 ThumbnailMessage
-- **file-worker → Kafka**: 消费 cloud-migrate / file-thumbnail topic
+- **File Service → MQ**: MergeChunks 完成后异步 `maybeEvictToCloud()` → Kafka 或 goroutine channel
+- **file-worker → Kafka**: 消费 cloud-migrate / file-thumbnail topic (Mode B only)
 
-## MQ 集成 (Kafka)
+## MQ 集成 (Kafka / goroutine)
 
-**客户端**: `segmentio/kafka-go` | **模式**: 生产端同步 + 消费端手动 commit | **降级**: 无 Kafka 时 noopProducer
+**Kafka**: `segmentio/kafka-go` | 生产端同步 + 消费端手动 commit | Mode B
+**goroutine MQ**: 进程内 buffered channel (256) | Mode A
 
 | 文件 | 职责 |
 |------|------|
 | `app/file/internal/biz/file.go` | `MessageProducer` 接口 + `CloudMigrateMessage`/`ThumbnailMessage` 结构体 + `maybeEvictToCloud()` 淘汰逻辑 |
 | `app/file/internal/data/kafka.go` | `kafkaProducer` / `noopProducer` 实现 (cloud-migrate + file-thumbnail 两个 Writer) |
+| `app/file/internal/data/mq_goroutine.go` | goroutineMQ 实现 (进程内 channel 替代 Kafka) |
 | `app/file/cmd/worker/main.go` | 独立消费进程 (CloudMigrateWorker + ThumbnailWorker) |
 
 ### CloudMigrateMessage (cloud-migrate)
@@ -333,6 +346,8 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 | 变量 | 说明 | 服务 | 示例 |
 |------|------|------|------|
+| DB_DRIVER | 数据库驱动 (mysql/sqlite) | user, file | sqlite |
+| SQLITE_PATH | SQLite 文件路径 | user, file | /app/data/cloud_disk.db |
 | DB_HOST | 数据库地址 | user, file | localhost |
 | DB_PORT | 数据库端口 | user, file | 3306 |
 | DB_USER | 数据库用户 | user, file | root |
@@ -342,6 +357,8 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | CONSUL_ADDR | Consul 地址 | user, file, gateway | localhost:8500 |
 | JWT_SECRET | JWT 密钥 | gateway | *** |
 | GATEWAY_ADDR | 网关监听地址 | gateway | :8080 |
+| STORAGE_MODE | 存储模式 (local/s3) | file | local |
+| PRIMARY_MAX_BYTES | 主存上限 (字节) | file | 10737418240 (10GB) |
 | SEAWEEDFS_ENDPOINT | SeaweedFS S3 端点 | file, worker | http://seaweedfs:8333 |
 | SEAWEEDFS_REGION | S3 Region | file, worker | us-east-1 |
 | SEAWEEDFS_BUCKET | S3 Bucket | file, worker | light-cloud-disk |
@@ -352,9 +369,6 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | OSS_BUCKET | OSS Bucket | file, worker | - |
 | OSS_ACCESS_KEY_ID | OSS AK | file, worker | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file, worker | *** |
-| LOCAL_MAX_BYTES | 本地磁盘上限 | file | 10737418240 (10GB) |
-| SEAWEEDFS_MAX_BYTES | SeaweedFS 上限 | file | 53687091200 (50GB) |
-| SEAWEEDFS_THRESHOLD_PCT | 淘汰阈值% | file | 80 |
 | KAFKA_BROKERS | Kafka 地址 | file, file-worker | localhost:9092 |
 | KAFKA_GROUP_ID | 消费者组 ID | file-worker | file-worker-group |
 | KAFKA_CLOUD_MIGRATE_TOPIC | 冷迁移 topic | file-worker | cloud-migrate |
@@ -372,15 +386,15 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 6. **Monorepo 结构**: 后端留在根目录（避免破坏 Go module 路径），前端位于 `frontend/` 目录。
 7. **vendor 离线构建**: `go mod vendor` 将全部依赖源码镜像到仓库，Dockerfile 使用 `-mod=vendor` 实现零网络构建，确保 CI 和本地构建行为一致。
 8. **统一 Dockerfile**: 用单个 `Dockerfile` + `SERVICE` 构建参数替代多个 Dockerfile，worker 的构建路径为 `./app/file/cmd/worker`，其余为 `./app/${SERVICE}/cmd`。
-9. **三级存储 (本地→SeaweedFS→OSS)**: 分块在本地磁盘 collect，合并后上传 SeaweedFS (S3 API)，SeaweedFS 超阈值后 LRU 淘汰到阿里云 OSS。成本与性能平衡：热数据就近访问，冷数据低成本归档。
+9. **双模式存储**: Mode A (local: 本地磁盘 + SQLite + goroutine MQ) / Mode B (s3: SeaweedFS + MySQL + Kafka)。单个 compose 文件通过 profiles 和 .env 文件切换。
 10. **ObjectStorage/CloudStorage 接口分离**: biz 层定义两个独立接口，data 层分别用 aws-sdk-go-v2 (SeaweedFS) 和 alibabacloud-oss-go-sdk-v2 (OSS) 实现，均有 noop 降级。
 11. **Redis 用量计数器**: `disk_usage:local` 和 `disk_usage:seaweedfs` 用 INCRBY 原子操作追踪，避免每次查 DB 聚合。
 
 ## 容器化
 
-- 统一 `Dockerfile`：多阶段构建 (golang:1.25-alpine → alpine:3.21)，通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
+- 统一 `Dockerfile`：多阶段构建 (golang:1.25-alpine → alpine:3.21)，CGO_ENABLED=1 支持 SQLite，通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
 - 前端独立 `frontend/Dockerfile`：多阶段 (node:24-alpine → nginx:1.27-alpine)
-- `docker-compose.yml` 编排 10 个服务：frontend / gateway / user-service / file-service / file-worker / consul / mysql / redis / kafka / seaweedfs
+- `docker-compose.yml` 双模式编排：profiles 机制 (`--profile s3`) 控制 MySQL/Kafka/SeaweedFS/file-worker 是否启动
 
 ## CI/CD
 
@@ -389,16 +403,17 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 ## 最近更新（2026-03）
 
-- **三级存储架构**: 本地磁盘 → SeaweedFS → 阿里云 OSS + LRU 自动冷迁移
-- 新增 `data/seaweedfs.go` (aws-sdk-go-v2 S3 客户端) 和 `data/oss.go` (alibabacloud-oss-go-sdk-v2)
-- Kafka topic 从 `file-transfer` 改为 `cloud-migrate`，消息格式 `CloudMigrateMessage` 带 `file_store_id` / `size`
-- file-worker 完整实现 `handleCloudMigrateMessage`: SeaweedFS→OSS 搬迁 + DB/Redis 状态维护
-- `biz/file.go` 新增 `ObjectStorage`/`CloudStorage` 接口、`StorageConfig` 配置、`maybeEvictToCloud()` 淘汰、`GetDiskUsage()`
-- `data/file.go` 新增 `FileStorePO.StorageType`/`LastAccessedAt` 字段、`FindLRUStores`/`SumSizeByStorageType`/`GetDiskUsage`/`IncrDiskUsage` 方法
-- `file.proto` 新增 `GetDiskUsage` RPC、`CheckUploadReply.disk_full` 字段
-- Gateway 新增 `GetDiskUsage` handler、`CheckUpload` 503 磁盘满处理
-- Docker Compose 新增 SeaweedFS 服务 (`chrislusf/seaweedfs:latest`)
-- 单元测试增至 71 个 (biz 33 + handler 15 + middleware 9 + user/biz 14)
+- **双模式存储架构**: Mode A (local: SQLite + 本地磁盘 + goroutine MQ) / Mode B (s3: MySQL + SeaweedFS + Kafka)
+- 可插拔数据库: MySQL / SQLite (DB_DRIVER 环境变量切换)
+- 可插拔消息队列: Kafka / 进程内 goroutine channel (自动根据 KAFKA_BROKERS 选择)
+- 新增 `data/mq_goroutine.go` (进程内 buffered channel 替代 Kafka)
+- 本地文件流式下载: `StreamFileContent` server-streaming RPC + Gateway `StreamFile` handler
+- Docker Compose profiles 双模式: `--profile s3` 启动完整模式
+- `.env.local` 和 `.env.s3` 环境变量模板
+- Dockerfile CGO 支持 (gcc + musl-dev) 编译 SQLite
+- 统一 `STORAGE_MODE` + `PRIMARY_MAX_BYTES` 存储配置 (env > config > default)
+- 前端 `local://` URL 自动走 blob 流式下载
+- 88 个后端单元测试 (biz 38 + handler 15 + middleware 9 + user/biz 14 + 其他 12)
 
 ## 前端架构
 

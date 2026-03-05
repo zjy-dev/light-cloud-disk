@@ -23,7 +23,7 @@ message Server {
 
 message Data {
   message Database {
-    string driver = 1;
+    string driver = 1; // "mysql" or "sqlite"
     int32 max_idle_conns = 2;
     int32 max_open_conns = 3;
     google.protobuf.Duration conn_max_lifetime = 4;
@@ -50,27 +50,34 @@ message Upload {
 }
 
 message Storage {
-  // Local disk max bytes for chunk temp and merge temp
-  int64 local_max_bytes = 1;
+  // "local" = local disk primary, "s3" = SeaweedFS (S3) primary
+  string mode = 1;
+
+  // Primary storage capacity limit (local disk in local mode, SeaweedFS in s3 mode)
+  int64 primary_max_bytes = 2;
+
+  // LRU eviction triggers when primary usage exceeds this percentage
+  int32 threshold_percent = 3; // default 80
+
+  // After eviction, reduce usage down to this percentage of threshold (default 90)
+  int32 evict_target_percent = 4; // default 90
 
   message SeaweedFS {
-    string endpoint = 1; // S3 API 端点，例如 http://seaweedfs:8333
-    string region = 2; // 通常为 "us-east-1"
+    string endpoint = 1;
+    string region = 2;
     string bucket = 3;
-    string access_key = 4; // 优先读取环境变量 SEAWEEDFS_ACCESS_KEY
-    string secret_key = 5; // 优先读取环境变量 SEAWEEDFS_SECRET_KEY
-    int64 max_bytes = 6; // SeaweedFS 总容量上限
-    int32 threshold_percent = 7; // 达到该百分比后触发淘汰
+    string access_key = 4;
+    string secret_key = 5;
   }
 
   message OSS {
     string endpoint = 1;
     string bucket = 2;
-    string access_key_id = 3; // 来自环境变量 OSS_ACCESS_KEY_ID
-    string access_key_secret = 4; // 来自环境变量 OSS_ACCESS_KEY_SECRET
+    string access_key_id = 3;
+    string access_key_secret = 4;
     string region = 5;
   }
 
-  SeaweedFS seaweedfs = 2;
-  OSS oss = 3;
+  SeaweedFS seaweedfs = 5;
+  OSS oss = 6;
 }
