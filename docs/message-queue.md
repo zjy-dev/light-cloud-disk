@@ -196,4 +196,4 @@ Worker 依赖 Kafka 健康检查通过后启动，与 file-service 独立部署�
 4. **消息重复怎么办？** — 幂等设计，Worker 检查 storage_type 是否已为 oss
 5. **Clean Architecture 如何集成？** — biz 层定义 `MessageProducer` 接口，data 层实现，Wire 注入，业务逻辑不依赖具体 MQ 实现
 6. **没有 Kafka 怎么办？** — `noopProducer` 降级，不影响核心上传流程
-7. **为什么从 file-transfer 改为 cloud-migrate？** — 语义更清晰，消息不再是"本地→OSS"的简单转存，而是三级存储间的"冷迁移"
+7. **为什么从 file-transfer 改为 cloud-migrate？** — 语义更清晰，消息不再是"本地→OSS"的简单转存，而是主存→OSS 的冷迁移

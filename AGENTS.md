@@ -6,12 +6,10 @@
 - 所有工具链用最新版本，可以用 context7 获取最新文档
 - 每次创建/修改/删除了 feature 或修复 bug 后，维护 README.md、AGENTS.md 以及 docs 目录
 - docs 目录中对每个功能的具体实现进行说明（方便面试时讲清楚）
-- 不要生成兼容性代码
 - 从 .env 和环境变量中读取敏感配置（.env 优先）
 - 常规配置使用 YAML 文件
 - 为新功能编写测试，有些只需要 mock 写单元测试，有些则需要单元和集成测试
 
-- 要有单元测试和集成测试
 - 敏感配置从环境变量和 .env 中读，非敏感配置写入 YAML 配置文件
 
 - 后端编程语言使用 Go，框架 Kratos v2
@@ -106,7 +104,7 @@ Mode B (s3):    MySQL + SeaweedFS + Kafka
 | `app/` | **核心业务代码**，包含三个微服务 + 一个独立 Worker 进程 |
 | `vendor/` | `go mod vendor` 生成的依赖源码副本；Dockerfile 用 `-mod=vendor` 做**零网络离线构建**，保证 CI/本地/容器三者一致。`.dockerignore` 故意不排除此目录 |
 | `third_party/` | 第三方 proto (google/api annotations)，供 `protoc` 编译时引用 |
-| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / three-tier-storage / gateway / chunk-upload / presigned-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
+| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / cold-hot-storage / gateway / chunk-upload / presigned-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
 | `frontend/` | Vue 3 前端 SPA，独立 pnpm 项目；拥有自己的 `Dockerfile`（Node 构建 → Nginx 运行） |
 | `.github/workflows/` | `ci.yml`（Push/PR → 后端测试 + 前端测试 + Compose 冒烟 + 构建 + GHCR 推送）、`release.yml`（tag → 多架构二进制 → GitHub Release） |
 

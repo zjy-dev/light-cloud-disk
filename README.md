@@ -74,7 +74,7 @@
 ```
 
 - **User Service**: 用户注册/登录、信息管理、存储配额 (gRPC-only, Kratos v2)
-- **File Service**: 分块上传、秒传、文件管理、回收站、分享、三级存储 (gRPC-only, Kratos v2)
+- **File Service**: 分块上传、秒传、文件管理、回收站、分享、冷热分层存储 (gRPC-only, Kratos v2)
 - **API Gateway**: HTTP 路由、JWT 认证、CORS、gRPC 代理 (Gin)
 - **SeaweedFS**: S3 兼容对象存储，合并后文件主存 (温数据)
 - **阿里云 OSS**: 冷数据归档，由 file-worker 异步迁移
@@ -412,7 +412,7 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 
 - [微服务架构设计](docs/architecture.md)
 - [双模式存储架构](docs/dual-mode-storage.md)
-- [三级存储架构](docs/three-tier-storage.md)
+- [冷热分层存储](docs/cold-hot-storage.md)
 - [API 网关实现](docs/gateway.md)
 - [分块上传实现](docs/chunk-upload.md)
 - [预签名分块上传](docs/presigned-upload.md)
@@ -440,7 +440,7 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - **安全加固**: presigned 操作 user_id 鉴权、服务端独立计算 totalParts、hashRouter 连接泄漏修复、事务原子删除、前端失败自动 abort
 
 ### v5.0.0 (2026)
-- **三级存储架构**: 本地磁盘(分块暂存) → SeaweedFS(温数据) → 阿里云 OSS(冷数据)
+- **冷热分层存储**: 主存 (Mode A: 本地磁盘 / Mode B: SeaweedFS) → LRU 淘汰 → 阿里云 OSS 冷归档
 - LRU 自动冷迁移: SeaweedFS 超阈值 → Kafka cloud-migrate → file-worker 异步搬迁到 OSS
 - 磁盘满保护: CheckUpload 检测 → 自动切换预签名上传
 - 磁盘用量查询 API (GetDiskUsage)
