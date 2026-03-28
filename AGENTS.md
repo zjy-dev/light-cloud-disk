@@ -4,8 +4,9 @@
 
 - **不要生成兼容性代码!!!**
 - 所有工具链用最新版本，可以用 context7 获取最新文档
-- 每次创建/修改/删除了 feature 或修复 bug 后，维护 README.md、AGENTS.md 以及 docs 目录
+- 每次创建/修改/删除了 feature 或修复 bug 后，维护 README.md
 - docs 目录中对每个功能的具体实现进行说明（方便面试时讲清楚）
+- 积极使用 Makefile
 - 从 .env 和环境变量中读取敏感配置（.env 优先）
 - 常规配置使用 YAML 文件
 - 为新功能编写测试，有些只需要 mock 写单元测试，有些则需要单元和集成测试
@@ -17,7 +18,10 @@
 - 前端包管理器使用 pnpm, 如果没有 node 环境则用 fnm 配置最新的 lts 版本
 - 前端框架用 Vue 3
 
-- 容器编排使用标准 Compose spec（Docker Compose / Podman Compose 兼容）
+- python 使用 uv 来管理虚拟环境和运行
+
+- 容器编排使用标准 Compose spec（Podman Compose / Docker Compose 兼容），以 Podman 为一等公民
+- Makefile 镜像构建统一使用 `--network host`，解决 podman-compose 不支持 `build.network` 的问题, 启动容器阵列前先 make images, 再 make up 启动
   
 - CI/CD 使用 GitHub Actions，容器镜像推送到 GHCR
 - GitHub Actions 的 Go 版本必须通过 `go-version-file: go.mod` 读取，并设置 `GOTOOLCHAIN=local`，避免版本漂移或自动 toolchain 导致测试失败
@@ -86,7 +90,7 @@ Mode B (s3):    MySQL + SeaweedFS + Kafka
 |------|------|
 | `go.mod` / `go.sum` | Go module 定义 (`github.com/J-Y-Zhang/light-cloud-disk`)，锁定全部依赖版本 |
 | `Makefile` | 统一构建入口：`make build` / `make test` / `make api` / `make wire` / `make run-*` / `make fe-*` / `make image-*` / `make infra-up` 等 |
-| `Dockerfile` | 统一多阶段构建 (CGO_ENABLED=1 支持 SQLite)，通过 `--build-arg SERVICE=user\|file\|gateway\|worker` 编译 4 种服务到同一镜像规格 |
+| `Dockerfile` | 统一多阶段构建 (CGO_ENABLED=1 支持 SQLite)，基于 debian (golang:1.25 + bookworm-slim，内置 gcc 无需网络)，通过 `--build-arg SERVICE=user\|file\|gateway\|worker` 编译 4 种服务到同一镜像规格 |
 | `docker-compose.yml` | 双模式容器编排：profiles 机制支持 local/s3 两种部署模式 |
 | `.env.example` | 环境变量模板 |
 | `.env.local` | 轻量模式环境变量 (SQLite + 本地磁盘) |
@@ -104,7 +108,7 @@ Mode B (s3):    MySQL + SeaweedFS + Kafka
 | `app/` | **核心业务代码**，包含三个微服务 + 一个独立 Worker 进程 |
 | `vendor/` | `go mod vendor` 生成的依赖源码副本；Dockerfile 用 `-mod=vendor` 做**零网络离线构建**，保证 CI/本地/容器三者一致。`.dockerignore` 故意不排除此目录 |
 | `third_party/` | 第三方 proto (google/api annotations)，供 `protoc` 编译时引用 |
-| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / cold-hot-storage / gateway / chunk-upload / presigned-upload / service-discovery / message-queue / ci-cd / containerization / frontend) |
+| `docs/` | 面试 / 设计文档 (architecture / dual-mode-storage / cold-hot-storage / gateway / chunk-upload / presigned-upload / service-discovery / message-queue / ci-cd / containerization / frontend / interview) |
 | `frontend/` | Vue 3 前端 SPA，独立 pnpm 项目；拥有自己的 `Dockerfile`（Node 构建 → Nginx 运行） |
 | `.github/workflows/` | `ci.yml`（Push/PR → 后端测试 + 前端测试 + Compose 冒烟 + 构建 + GHCR 推送）、`release.yml`（tag → 多架构二进制 → GitHub Release） |
 

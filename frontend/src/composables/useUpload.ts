@@ -113,29 +113,22 @@ export function useUpload() {
     })
 
     // Fast-upload dedup hit
-    const rawInit = initReply as Record<string, unknown>
-    const canFast = !!(rawInit['can_fast_upload'] ?? rawInit['canFastUpload'])
-    if (canFast) {
+    if (initReply.canFastUpload) {
       task.progress = 100
       task.status = 'done'
       onComplete?.()
       return
     }
 
-    const sessionId = ((rawInit['session_id'] ?? rawInit['sessionId']) as string) || ''
-    const partSize = Number(rawInit['part_size'] ?? rawInit['partSize']) || CHUNK_SIZE
-
-    // completed_parts / pending_parts may arrive in snake_case
-    type RawPart = Record<string, unknown>
-    const rawCompleted = ((rawInit['completed_parts'] ?? rawInit['completedParts']) as RawPart[] | undefined) ?? []
-    const rawPending = ((rawInit['pending_parts'] ?? rawInit['pendingParts']) as RawPart[] | undefined) ?? []
+    const sessionId = initReply.sessionId ?? ''
+    const partSize = initReply.partSize || CHUNK_SIZE
 
     const completedSet = new Set(
-      rawCompleted.map((p) => Number(p['part_number'] ?? p['partNumber'])),
+      (initReply.completedParts ?? []).map((p: { partNumber: number }) => p.partNumber),
     )
-    const pendingParts = rawPending.map((p) => ({
-      partNumber: Number(p['part_number'] ?? p['partNumber']),
-      uploadUrl: (p['upload_url'] ?? p['uploadUrl']) as string,
+    const pendingParts = (initReply.pendingParts ?? []).map((p: { partNumber: number; uploadUrl: string }) => ({
+      partNumber: p.partNumber,
+      uploadUrl: p.uploadUrl,
     }))
 
     task.status = 'uploading'
@@ -196,14 +189,16 @@ export function useUpload() {
 
   async function uploadFile(file: File, parentId: number, onComplete?: () => void) {
     const taskId = crypto.randomUUID()
-    const task: UploadTask = {
+    const taskData: UploadTask = {
       id: taskId,
       file,
       fileName: file.name,
       progress: 0,
       status: 'hashing',
     }
-    tasks.value.push(task)
+    tasks.value.push(taskData)
+    // Get the reactive proxy so all mutations trigger UI updates
+    const task = tasks.value[tasks.value.length - 1]!
 
     try {
       // Compute MD5 in chunks and map hashing progress to 0-15
@@ -219,10 +214,8 @@ export function useUpload() {
         totalChunks,
       })
 
-      // Backend proto uses snake_case JSON keys; TS types use camelCase.
-      // Access both to handle either serialization format.
-      const rawResult = checkResult as Record<string, unknown>
-      const canFastUpload = !!(rawResult['can_fast_upload'] ?? rawResult['canFastUpload'])
+      // Response is now camelCase thanks to the Axios interceptor
+      const canFastUpload = !!checkResult.canFastUpload
 
       if (canFastUpload) {
         // Instant upload hit, go straight to merge
@@ -242,8 +235,8 @@ export function useUpload() {
       }
 
       // Branch based on upload mode.
-      const uploadMode = (rawResult['upload_mode'] ?? rawResult['uploadMode'] ?? 'direct') as string
-      const uploadedChunks = (rawResult['uploaded_chunks'] ?? rawResult['uploadedChunks'] ?? []) as number[]
+      const uploadMode = checkResult.uploadMode ?? 'direct'
+      const uploadedChunks = checkResult.uploadedChunks ?? []
       if (uploadMode === 'presigned') {
         await presignedUpload(task, parentId, fileMd5, onComplete)
       } else {

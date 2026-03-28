@@ -1,12 +1,13 @@
 # 容器化部署
 
-本项目支持 Docker Compose 和 Podman Compose，提供**双模式部署**。
+本项目以 **Podman + podman-compose** 为一等公民，同时兼容 Docker / Docker Compose。
+Makefile 会自动检测 `podman` / `docker` 命令并使用。
 
 ## 部署模式
 
 | | Mode A: local (轻量) | Mode B: s3 (完整) |
 |--|---|---|
-| **启动命令** | `docker compose --env-file .env.local up -d` | `docker compose --env-file .env.s3 --profile s3 up -d` |
+| **启动命令** | `make images && make up` | `make images-all && make up ENV_FILE=.env.s3 PROFILE="--profile s3"` |
 | **服务数** | 6 (consul, redis, user, file, gateway, frontend) | 10 (+ mysql, kafka, seaweedfs, file-worker) |
 | **数据库** | SQLite (容器内文件) | MySQL 8.0 |
 | **消息队列** | 进程内 goroutine | Kafka |
@@ -31,33 +32,58 @@
 
 ## 快速启动
 
+> **为什么分两步（先 build 再 up）？**
+> podman-compose 1.x 不支持 Compose spec 的 `build.network` 字段，
+> 而 podman 默认 bridge 网络在某些环境无法访问互联网。
+> `make images` 统一使用 `--network host` 构建，确保任何环境都能成功。
+
 ```bash
 # Mode A: 轻量模式
-docker compose --env-file .env.local up -d --build
+make images              # 构建 backend + frontend 镜像
+make up                  # 启动 (默认 .env.local)
 
 # Mode B: 完整模式
-docker compose --env-file .env.s3 --profile s3 up -d --build
+make images-all          # 额外构建 file-worker
+make up ENV_FILE=.env.s3 PROFILE="--profile s3"
 
 # 仅基础设施 (本地开发)
-docker compose up -d consul redis
+make infra-up
 
-# 查看日志
-docker compose logs -f gateway user-service file-service
+# 查看日志 / 停止服务
+make logs
+make down
+```
 
-# 停止服务
-docker compose down
+如果你使用 Docker Compose（支持 `build.network`），也可以直接一步到位：
+```bash
+docker compose --env-file .env.local up -d --build
+docker compose --env-file .env.s3 --profile s3 up -d --build
 ```
 
 ## Makefile 命令
 
 ```bash
+# 镜像构建 (统一 --network host)
 make image-user       # 构建用户服务镜像
 make image-file       # 构建文件服务镜像
 make image-gateway    # 构建网关镜像
+make image-worker     # 构建 file-worker 镜像
+make image-frontend   # 构建前端镜像
+make images           # 构建全部 (不含 worker)
+make images-all       # 构建全部 (含 worker)
 
-make infra-up         # 启动基础设施 (MySQL + Redis + Consul + Kafka)
-make infra-down       # Stop services基础设施
+# Compose 操作
+make up               # 启动 (默认 .env.local)
+make down             # 停止
+make ps               # 查看状态
+make logs             # 查看日志
+make clean-containers # 停止并清除数据卷
 
+# 自定义 env / profile
+make up ENV_FILE=.env.s3 PROFILE="--profile s3"
+
+# 本地开发 (不用容器)
+make infra-up         # 启动 Consul + Redis
 make run-user         # 本地运行用户服务
 make run-file         # 本地运行文件服务
 make run-gateway      # 本地运行网关
@@ -68,23 +94,23 @@ make run-gateway      # 本地运行网关
 多阶段构建，通过 `SERVICE` 构建参数指定服务：
 
 ```dockerfile
-# Build stage
-FROM golang:1.25-alpine AS builder
-RUN apk add --no-cache gcc musl-dev  # CGO for SQLite
+# Build stage — debian 基础镜像内置 gcc，无需网络安装依赖
+FROM golang:1.25 AS builder
 ARG SERVICE
 COPY . .
-# CGO_ENABLED=1 for SQLite support
+# CGO_ENABLED=1 for SQLite support, -mod=vendor 零网络离线编译
 RUN CGO_ENABLED=1 go build -mod=vendor -o /app/server ${BUILD_PATH}
 
-# Runtime stage
-FROM alpine:3.21
+# Runtime stage — debian-slim (glibc 兼容 CGO 二进制)
+FROM debian:bookworm-slim
 RUN mkdir -p /app/data /app/store  # SQLite DB + local file storage
 COPY --from=builder /app/server /app/server
 ```
 
 特点：
-- `CGO_ENABLED=1` + musl-dev 支持 SQLite 编译
-- 最终镜像约 25MB
+- 基于 debian (golang:1.25 + bookworm-slim)，内置 gcc 无需网络下载
+- `CGO_ENABLED=1` 支持 SQLite 编译
+- `-mod=vendor` 离线构建，配合 `--network host` 保证任何网络环境都能成功
 - 支持通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
 - `/app/data/` 存放 SQLite 数据库文件
 - `/app/store/` 存放本地模式的合并文件
@@ -170,6 +196,7 @@ curl -X POST http://localhost:8080/api/v1/user/register \
 ## 面试要点
 
 1. **为什么用多阶段构建？** — 构建环境与运行环境分离，镜像更小更安全
-2. **为什么 Alpine？** — 体积小 (~5MB)，安全更新及时
-3. **Consul 在容器中怎么工作？** — 单节点 server 模式，服务通过 `consul:8500` 访问
-4. **服务启动顺序？** — `depends_on` + healthcheck 确保基础设施就绪后才启动应用
+2. **为什么 Dockerfile 用 debian 而不是 Alpine？** — CGO (SQLite) 编译需要 gcc，alpine 需要 `apk add` 下载，在 podman bridge 网络受限时会失败；debian 内置 gcc 无需额外网络请求
+3. **为什么分两步 build + up？** — podman-compose 1.x 不支持 `build.network: host`，无法在 compose build 时指定宿主机网络；预构建镜像后 `up -d` 可直接使用
+4. **Consul 在容器中怎么工作？** — 单节点 server 模式，服务通过 `consul:8500` 访问
+5. **服务启动顺序？** — `depends_on` + healthcheck 确保基础设施就绪后才启动应用

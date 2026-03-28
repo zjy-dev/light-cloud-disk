@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { FileInfo } from '@/types'
 import { useFileStore } from '@/stores/file'
 import {
-  Folder,
+  FolderClosed,
   FileText,
   FileImage,
   FileVideo,
@@ -38,7 +38,7 @@ const showMenu = ref(false)
 const isSelected = computed(() => fileStore.selectedIds.has(props.file.id))
 
 const fileIcon = computed(() => {
-  if (props.file.isFolder) return Folder
+  if (props.file.isFolder) return FolderClosed
   const ext = props.file.name.split('.').pop()?.toLowerCase() ?? ''
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return FileImage
   if (['mp4', 'avi', 'mov', 'mkv', 'webm'].includes(ext)) return FileVideo
@@ -183,8 +183,9 @@ function closeMenu() {
     <!-- Icon -->
     <component
       :is="fileIcon"
-      class="w-10 h-10 mb-2"
-      :class="iconColor"
+      :class="[iconColor, file.isFolder ? 'w-12 h-12 mb-1' : 'w-10 h-10 mb-2']"
+      :fill="file.isFolder ? 'currentColor' : 'none'"
+      :stroke-width="file.isFolder ? 1.5 : 2"
     />
 
     <!-- Name -->

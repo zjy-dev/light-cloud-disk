@@ -152,7 +152,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
       args:
         SERVICE: user
         VERSION: ${VERSION:-dev}
@@ -188,7 +187,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
       args:
         SERVICE: file
         VERSION: ${VERSION:-dev}
@@ -249,7 +247,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
       args:
         SERVICE: worker
         VERSION: ${VERSION:-dev}
@@ -298,7 +295,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
       args:
         SERVICE: gateway
         VERSION: ${VERSION:-dev}
@@ -330,7 +326,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      network: host
     image: light-cloud-disk/frontend:${VERSION:-latest}
     container_name: cloud-disk-frontend
     environment:

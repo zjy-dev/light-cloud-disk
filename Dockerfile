@@ -1,8 +1,11 @@
-# Build stage uses vendor mode to avoid external network access
-FROM docker.io/library/golang:1.25-alpine AS builder
+# Build stage — golang:1.25 (debian) ships gcc + libc-dev out of the box,
+# eliminating the need for network access (apk add) during build.
+# This ensures compatibility with podman's default bridge network which may
+# lack external connectivity in some environments.
+FROM docker.io/library/golang:1.25 AS builder
 
-# gcc + musl-dev needed for CGO (SQLite driver)
-RUN apk add --no-cache gcc musl-dev
+# Clear proxy env vars inherited from host build environment
+ENV HTTP_PROXY="" HTTPS_PROXY="" http_proxy="" https_proxy="" ALL_PROXY="" all_proxy=""
 
 WORKDIR /src
 
@@ -33,8 +36,8 @@ RUN mkdir -p /app/configs && \
       cp -r app/${SERVICE}/configs/* /app/configs/ 2>/dev/null || true; \
     fi
 
-# Runtime stage
-FROM docker.io/library/alpine:3.21
+# Runtime stage — use debian-slim to match glibc from build stage (CGO/SQLite)
+FROM docker.io/library/debian:bookworm-slim
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 

@@ -40,6 +40,7 @@ async function confirmRename() {
 }
 
 function onDownload(file: FileInfo) {
+  if (file.isFolder) return
   fileStore.downloadFile(file.id)
 }
 

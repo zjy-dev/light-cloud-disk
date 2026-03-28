@@ -6,10 +6,10 @@ WORKDIR /app
 # Clear proxy env vars inherited from host build environment
 ENV HTTP_PROXY="" HTTPS_PROXY="" http_proxy="" https_proxy="" ALL_PROXY="" all_proxy=""
 
-# Install pnpm 9.x to match lockfile format (lockfileVersion: "9.0")
-RUN npm install -g pnpm@9 --registry=https://registry.npmmirror.com
+# Install pnpm via corepack (ships with Node 24)
+RUN corepack enable && corepack prepare pnpm@10 --activate
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
 
 COPY . .

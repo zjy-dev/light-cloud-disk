@@ -140,9 +140,10 @@ export const fileApi = {
     })
   },
 
-  // Download a file as a blob (for local-mode stream URLs that need auth)
+  // Download a file as a blob (for local-mode stream URLs that need auth).
+  // The url is already a full path (e.g. /api/v1/file/stream/17), so skip baseURL.
   downloadBlob(url: string) {
-    return client.get<Blob>(url, { responseType: 'blob' })
+    return client.get<Blob>(url, { responseType: 'blob', baseURL: '' })
   },
 
   // Presigned multipart upload APIs

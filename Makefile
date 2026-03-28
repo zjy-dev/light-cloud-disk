@@ -157,56 +157,80 @@ all: api conf wire build fe-build
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 COMPOSE_RUNTIME := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null)
 
+# NOTE: --network host is required for podman builds (podman-compose does not
+# support docker-compose's build.network field, and podman's default bridge
+# network may not have internet access). Docker also supports --network host,
+# so this works for both runtimes. Use 'make images' before 'make up'.
 .PHONY: image-user
 # Build user service container image
 image-user:
-	$(CONTAINER_RUNTIME) build --build-arg SERVICE=user --build-arg VERSION=$(VERSION) -t light-cloud-disk/user-service:$(VERSION) .
+	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=user --build-arg VERSION=$(VERSION) -t light-cloud-disk/user-service:$(VERSION) .
 
 .PHONY: image-file
 # Build file service container image
 image-file:
-	$(CONTAINER_RUNTIME) build --build-arg SERVICE=file --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-service:$(VERSION) .
+	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=file --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-service:$(VERSION) .
+
+.PHONY: image-worker
+# Build file worker container image
+image-worker:
+	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=worker --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-worker:$(VERSION) .
 
 .PHONY: image-gateway
 # Build gateway service container image
 image-gateway:
-	$(CONTAINER_RUNTIME) build --build-arg SERVICE=gateway --build-arg VERSION=$(VERSION) -t light-cloud-disk/gateway:$(VERSION) .
+	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=gateway --build-arg VERSION=$(VERSION) -t light-cloud-disk/gateway:$(VERSION) .
+
+.PHONY: image-frontend
+# Build frontend container image
+image-frontend:
+	$(CONTAINER_RUNTIME) build --network host -f frontend/Dockerfile -t light-cloud-disk/frontend:$(VERSION) frontend/
 
 .PHONY: images
-# Build all container images
-images: image-user image-file image-gateway
+# Build all container images (backend + frontend)
+images: image-user image-file image-gateway image-frontend
 
-# Compose commands
+.PHONY: images-all
+# Build all container images including s3-mode worker
+images-all: images image-worker
+
+# --- Compose commands ---
+# ENV_FILE defaults to .env.local (lightweight SQLite mode);
+# override with: make up ENV_FILE=.env.s3 PROFILE="--profile s3"
+ENV_FILE ?= .env.local
+PROFILE ?=
+
 .PHONY: up
+# Start services (pre-built images required: run 'make images' first)
 up:
-	$(COMPOSE_RUNTIME) up -d
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) up -d
 
 .PHONY: down
 down:
-	$(COMPOSE_RUNTIME) down
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) down
 
 .PHONY: logs
 logs:
-	$(COMPOSE_RUNTIME) logs -f
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) logs -f
 
 .PHONY: ps
 ps:
-	$(COMPOSE_RUNTIME) ps
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) ps
 
-# Infrastructure only (for local development)
+# Infrastructure only (for local development without containers)
 .PHONY: infra-up
-# Start infra services (MySQL, Redis, Kafka, Consul)
+# Start infra services (Consul, Redis; add mysql/kafka with PROFILE="--profile s3")
 infra-up:
-	$(COMPOSE_RUNTIME) up -d mysql redis kafka consul
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) up -d consul redis
 
 .PHONY: infra-down
 infra-down:
-	$(COMPOSE_RUNTIME) down mysql redis kafka consul
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) down consul redis
 
 # Clean containers and volumes
 .PHONY: clean-containers
 clean-containers:
-	$(COMPOSE_RUNTIME) down -v --remove-orphans
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) down -v --remove-orphans
 
 help:
 	@echo ''
