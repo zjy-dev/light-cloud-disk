@@ -4,12 +4,11 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
@@ -39,10 +38,11 @@ func (FilePO) TableName() string {
 
 type FileStorePO struct {
 	ID             int64     `gorm:"primaryKey;autoIncrement"`
-	FileMD5        string    `gorm:"uniqueIndex;size:32;not null"`
-	Size           int64     `gorm:"not null"`
+	FileMD5        string    `gorm:"uniqueIndex:idx_md5_size;size:32;not null"`
+	Size           int64     `gorm:"uniqueIndex:idx_md5_size;not null"`
 	StorePath      string    `gorm:"size:512;not null"`
-	StorageType    string    `gorm:"size:16;not null;default:seaweedfs"`
+	StorageType    string    `gorm:"size:16;not null;default:local"`
+	UploadStatus   string    `gorm:"size:16;not null;default:uploading"`
 	RefCount       int32     `gorm:"default:1"`
 	LastAccessedAt time.Time `gorm:"autoUpdateTime"`
 	CreatedAt      time.Time
@@ -50,6 +50,20 @@ type FileStorePO struct {
 
 func (FileStorePO) TableName() string {
 	return "file_stores"
+}
+
+// ErasureShardPO stores individual erasure-coded shard metadata.
+type ErasureShardPO struct {
+	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	FileStoreID int64  `gorm:"index;not null"`
+	ShardIndex  int32  `gorm:"not null"`
+	ShardPath   string `gorm:"size:512;not null"`
+	ShardSize   int64  `gorm:"not null"`
+	CreatedAt   time.Time
+}
+
+func (ErasureShardPO) TableName() string {
+	return "erasure_shards"
 }
 
 type SharePO struct {
@@ -230,6 +244,7 @@ func (r *fileRepo) FindStoreByMD5(ctx context.Context, md5 string) (*biz.FileSto
 		Size:           po.Size,
 		StorePath:      po.StorePath,
 		StorageType:    po.StorageType,
+		UploadStatus:   po.UploadStatus,
 		RefCount:       po.RefCount,
 		LastAccessedAt: po.LastAccessedAt,
 	}, nil
@@ -288,18 +303,146 @@ func (r *fileRepo) DeleteExpiredShares(ctx context.Context) error {
 	return r.data.db.WithContext(ctx).Where("expire_at IS NOT NULL AND expire_at < ?", time.Now()).Delete(&SharePO{}).Error
 }
 
-// Redis operations for chunk upload
+// Redis operations for chunk upload — SET-based (SADD/SMEMBERS)
 func (r *fileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int32, error) {
 	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
-	data, err := r.data.redis.Get(ctx, key).Bytes()
+	members, err := r.data.redis.SMembers(ctx, key).Result()
 	if err != nil {
 		return []int32{}, nil
 	}
-
-	var chunks []int32
-	json.Unmarshal(data, &chunks)
-	sort.Slice(chunks, func(i, j int) bool { return chunks[i] < chunks[j] })
+	chunks := make([]int32, 0, len(members))
+	for _, m := range members {
+		v, _ := strconv.Atoi(m)
+		chunks = append(chunks, int32(v))
+	}
 	return chunks, nil
+}
+
+func (r *fileRepo) AddUploadedChunk(ctx context.Context, fileMD5 string, chunkIndex int32) error {
+	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
+	if err := r.data.redis.SAdd(ctx, key, chunkIndex).Err(); err != nil {
+		return err
+	}
+	return r.data.redis.Expire(ctx, key, 24*time.Hour).Err()
+}
+
+func (r *fileRepo) IsChunkUploaded(ctx context.Context, fileMD5 string, chunkIndex int32) (bool, error) {
+	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
+	return r.data.redis.SIsMember(ctx, key, chunkIndex).Result()
+}
+
+func (r *fileRepo) CountUploadedChunks(ctx context.Context, fileMD5 string) (int32, error) {
+	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
+	n, err := r.data.redis.SCard(ctx, key).Result()
+	return int32(n), err
+}
+
+// AcquireChunkLock acquires a per-chunk distributed lock via Redis SETNX.
+func (r *fileRepo) AcquireChunkLock(ctx context.Context, fileMD5 string, chunkIndex int32, ttl time.Duration) (bool, error) {
+	key := fmt.Sprintf("lock:chunk:%s:%d", fileMD5, chunkIndex)
+	return r.data.redis.SetNX(ctx, key, "1", ttl).Result()
+}
+
+// ReleaseChunkLock releases the per-chunk lock.
+func (r *fileRepo) ReleaseChunkLock(ctx context.Context, fileMD5 string, chunkIndex int32) error {
+	key := fmt.Sprintf("lock:chunk:%s:%d", fileMD5, chunkIndex)
+	return r.data.redis.Del(ctx, key).Err()
+}
+
+// AcquireMergeLock acquires a distributed merge lock via Redis SETNX.
+func (r *fileRepo) AcquireMergeLock(ctx context.Context, fileMD5 string, ttl time.Duration) (bool, error) {
+	key := fmt.Sprintf("lock:merge:%s", fileMD5)
+	return r.data.redis.SetNX(ctx, key, "1", ttl).Result()
+}
+
+// ReleaseMergeLock releases the merge lock.
+func (r *fileRepo) ReleaseMergeLock(ctx context.Context, fileMD5 string) error {
+	key := fmt.Sprintf("lock:merge:%s", fileMD5)
+	return r.data.redis.Del(ctx, key).Err()
+}
+
+// CreateStoreWithStatus creates a store record with an initial status.
+// Returns the created store. If a UNIQUE constraint violation occurs (dup md5+size),
+// it returns the existing record and no error.
+func (r *fileRepo) CreateStoreWithStatus(ctx context.Context, store *biz.FileStore) (*biz.FileStore, error) {
+	po := &FileStorePO{
+		FileMD5:      store.FileMD5,
+		Size:         store.Size,
+		StorePath:    store.StorePath,
+		StorageType:  store.StorageType,
+		UploadStatus: store.UploadStatus,
+		RefCount:     1,
+	}
+	if err := r.data.db.WithContext(ctx).Create(po).Error; err != nil {
+		// Check for UNIQUE constraint violation — another instance already created the record
+		var existing FileStorePO
+		if findErr := r.data.db.WithContext(ctx).Where("file_md5 = ? AND size = ?", store.FileMD5, store.Size).First(&existing).Error; findErr == nil {
+			return &biz.FileStore{
+				ID:           existing.ID,
+				FileMD5:      existing.FileMD5,
+				Size:         existing.Size,
+				StorePath:    existing.StorePath,
+				StorageType:  existing.StorageType,
+				UploadStatus: existing.UploadStatus,
+				RefCount:     existing.RefCount,
+			}, nil
+		}
+		return nil, err
+	}
+	store.ID = po.ID
+	return store, nil
+}
+
+// UpdateStoreStatus atomically updates the upload status of a store.
+func (r *fileRepo) UpdateStoreStatus(ctx context.Context, id int64, status string) error {
+	return r.data.db.WithContext(ctx).Model(&FileStorePO{}).Where("id = ?", id).Update("upload_status", status).Error
+}
+
+// FindStoreByMD5AndStatus finds a store by MD5 and upload status.
+func (r *fileRepo) FindStoreByMD5AndStatus(ctx context.Context, md5, status string) (*biz.FileStore, error) {
+	var po FileStorePO
+	if err := r.data.db.WithContext(ctx).Where("file_md5 = ? AND upload_status = ?", md5, status).First(&po).Error; err != nil {
+		return nil, err
+	}
+	return &biz.FileStore{
+		ID:           po.ID,
+		FileMD5:      po.FileMD5,
+		Size:         po.Size,
+		StorePath:    po.StorePath,
+		StorageType:  po.StorageType,
+		UploadStatus: po.UploadStatus,
+		RefCount:     po.RefCount,
+	}, nil
+}
+
+// CreateErasureShard persists a single erasure shard record.
+func (r *fileRepo) CreateErasureShard(ctx context.Context, shard *biz.ErasureShard) error {
+	po := &ErasureShardPO{
+		FileStoreID: shard.FileStoreID,
+		ShardIndex:  shard.ShardIndex,
+		ShardPath:   shard.ShardPath,
+		ShardSize:   shard.ShardSize,
+	}
+	return r.data.db.WithContext(ctx).Create(po).Error
+}
+
+// FindErasureShards returns all shards for a given file_store_id.
+func (r *fileRepo) FindErasureShards(ctx context.Context, fileStoreID int64) ([]*biz.ErasureShard, error) {
+	var pos []ErasureShardPO
+	if err := r.data.db.WithContext(ctx).Where("file_store_id = ?", fileStoreID).Order("shard_index ASC").Find(&pos).Error; err != nil {
+		return nil, err
+	}
+	shards := make([]*biz.ErasureShard, len(pos))
+	for i, po := range pos {
+		shards[i] = &biz.ErasureShard{
+			ID:          po.ID,
+			FileStoreID: po.FileStoreID,
+			ShardIndex:  po.ShardIndex,
+			ShardPath:   po.ShardPath,
+			ShardSize:   po.ShardSize,
+		}
+	}
+	return shards, nil
 }
 
 func chunkRootDir() string {
@@ -375,26 +518,6 @@ func (r *fileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string,
 	return storePath, nil
 }
 
-func (r *fileRepo) SaveChunkInfo(ctx context.Context, chunk *biz.ChunkInfo) error {
-	key := fmt.Sprintf("upload:%s:chunks", chunk.FileMD5)
-
-	chunks, _ := r.GetUploadedChunks(ctx, chunk.FileMD5)
-	chunkSet := make(map[int32]struct{}, len(chunks)+1)
-	for _, v := range chunks {
-		chunkSet[v] = struct{}{}
-	}
-	chunkSet[chunk.ChunkIndex] = struct{}{}
-
-	merged := make([]int32, 0, len(chunkSet))
-	for v := range chunkSet {
-		merged = append(merged, v)
-	}
-	sort.Slice(merged, func(i, j int) bool { return merged[i] < merged[j] })
-
-	data, _ := json.Marshal(merged)
-	return r.data.redis.Set(ctx, key, data, 24*time.Hour).Err()
-}
-
 func (r *fileRepo) ClearChunkInfo(ctx context.Context, fileMD5 string) error {
 	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
 	return r.data.redis.Del(ctx, key).Err()
@@ -432,6 +555,7 @@ func (r *fileRepo) FindLRUStores(ctx context.Context, storageType string, limit 
 			Size:           po.Size,
 			StorePath:      po.StorePath,
 			StorageType:    po.StorageType,
+			UploadStatus:   po.UploadStatus,
 			RefCount:       po.RefCount,
 			LastAccessedAt: po.LastAccessedAt,
 		}

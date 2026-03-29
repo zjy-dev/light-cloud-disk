@@ -2,14 +2,14 @@
 
 ## 概述
 
-预签名上传是一种"客户端直传"方案：后端签发临时授权 URL，浏览器直接将文件分块 PUT 到对象存储（SeaweedFS / 阿里云 OSS），绕过 Gateway 转发，大幅降低带宽和 CPU 开销。
+预签名上传是一种"客户端直传"方案：后端签发临时授权 URL，浏览器直接将文件分块 PUT 到阿里云 OSS，绕过 Gateway 转发，大幅降低带宽和 CPU 开销。
 
 与传统 "直传"（direct upload）模式相比：
 
 | 维度 | Direct 模式 | Presigned 模式 |
 |------|-------------|----------------|
-| 数据路径 | 浏览器 → Gateway → File Service → 磁盘 | 浏览器 → 对象存储（直传） |
-| 适用场景 | Mode A (local)，本地磁盘未满 | Mode B (s3) 或 Mode A 磁盘满 |
+| 数据路径 | 浏览器 → Gateway → File Service → 本地磁盘 | 浏览器 → 阿里云 OSS（直传） |
+| 适用场景 | 本地磁盘未满 | 本地磁盘已满（降级为 OSS） |
 | 后端压力 | 高（所有字节经后端） | 低（仅签发 URL + 元数据管理） |
 | 断点续传 | Redis chunk 状态 | upload_sessions + upload_parts 表 |
 | 跨设备续传 | ❌（chunk 和 Redis 绑定同一节点） | ✅（session 持久化到 DB，任意设备可续） |
@@ -21,22 +21,19 @@ CheckUpload()
 │
 ├── MD5 命中 → 秒传 (upload_mode = "direct")
 │
-├── Mode B (s3) → upload_mode = "presigned"
-│   （S3 模式永远走预签名，数据不过后端）
+├── 本地磁盘未满 → upload_mode = "direct"
+│   （走传统 SaveChunk + MergeChunks + 纠删码编码）
 │
-└── Mode A (local)
-    ├── 磁盘未满 → upload_mode = "direct"
-    │   （走传统 SaveChunk + MergeChunks）
-    └── 磁盘已满 → upload_mode = "presigned"
-        （降级为 OSS 预签名上传）
+└── 本地磁盘已满 → upload_mode = "presigned"
+    （降级为阿里云 OSS 预签名上传）
 ```
 
 ## 完整流程
 
 ```
 ┌──────────┐        ┌───────────────┐        ┌──────────────┐        ┌──────────────┐
-│  浏览器   │        │   Gateway     │        │ File Service │        │  SeaweedFS   │
-│          │        │   (:8080)     │        │  (:9002)     │        │  / OSS       │
+│  浏览器   │        │   Gateway     │        │ File Service │        │  阿里云 OSS  │
+│          │        │   (:8080)     │        │  (:9002)     │        │              │
 └────┬─────┘        └───────┬───────┘        └──────┬───────┘        └──────┬───────┘
      │  1. CheckUpload      │                       │                       │
      │─────────────────────▶│──── gRPC ────────────▶│                       │
@@ -80,7 +77,7 @@ CheckUpload()
 | file_size | BIGINT | 文件总大小 |
 | total_parts | INT | 总分块数 |
 | part_size | BIGINT | 每块大小 (默认 5MB) |
-| storage_target | VARCHAR(20) | "seaweedfs" 或 "oss" |
+| storage_target | VARCHAR(20) | "oss" |
 | object_key | VARCHAR(255) | 对象存储 key |
 | s3_upload_id | VARCHAR(255) | S3 multipart upload ID |
 | status | VARCHAR(20) | "uploading" / "completed" / "aborted" |
@@ -115,11 +112,11 @@ CheckUpload()
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "storage_target": "seaweedfs",
+  "storage_target": "oss",
   "part_size": 5242880,
   "pending_parts": [
-    {"part_number": 1, "upload_url": "https://seaweedfs/bucket/key?X-Amz-...&partNumber=1"},
-    {"part_number": 2, "upload_url": "https://seaweedfs/bucket/key?X-Amz-...&partNumber=2"}
+    {"part_number": 1, "upload_url": "https://oss-cn-hangzhou.aliyuncs.com/bucket/key?...&partNumber=1"},
+    {"part_number": 2, "upload_url": "https://oss-cn-hangzhou.aliyuncs.com/bucket/key?...&partNumber=2"}
   ]
 }
 ```
@@ -162,7 +159,7 @@ CheckUpload()
 预签名模式完全消除了这个问题：
 
 1. **会话持久化到 DB**：`upload_sessions` 和 `upload_parts` 表存在关系数据库中，任意节点均可读取
-2. **数据直传对象存储**：分块直接上传到 SeaweedFS/OSS，不存在"本地分块"的概念
+2. **数据直传 OSS**：分块直接上传到阿里云 OSS，不存在"本地分块"的概念
 3. **按 MD5 查找会话**：`InitPresignedUpload` 通过 `file_md5 + user_id` 查找已有 session
 4. **URL 可重新签发**：过期的 presigned URL 通过 resume 逻辑重新生成
 
@@ -218,15 +215,14 @@ presigned 上传流程：
 
 **注意**：Proto 生成的 JSON 使用 snake_case 字段名（如 `upload_mode`、`can_fast_upload`），而 TypeScript 类型定义用 camelCase。前端通过双键访问模式处理：`rawResult['upload_mode'] ?? rawResult['uploadMode']`。
 
-## ObjectStorage 接口扩展
+## CloudStorage 接口
 
-为支持预签名，`ObjectStorage` 和 `CloudStorage` 接口新增以下方法：
+预签名操作由 `CloudStorage` 接口（阿里云 OSS）提供：
 
 ```go
-type ObjectStorage interface {
+type CloudStorage interface {
     Put(ctx, key string, data io.Reader, size int64) error
     PresignGetURL(ctx, key string, expires time.Duration) (string, error)
-    // 新增
     InitMultipartUpload(ctx, key string) (uploadID string, err error)
     PresignUploadPart(ctx, key, uploadID string, partNumber int32, expires time.Duration) (string, error)
     CompleteMultipartUpload(ctx, key, uploadID string, parts []CompletedPart) error
@@ -261,6 +257,6 @@ type ObjectStorage interface {
 5. **presigned URL 安全性** — URL 自带签名和过期时间（2h），无法伪造。Session 24h 过期后自动清理。
 6. **session 鉴权** — Report/Complete/Abort 三个操作均校验 `session.UserID == 请求 userID`，防止越权操作他人 session。
 7. **totalParts 服务端计算** — 服务端根据 `fileSize/partSize` 独立计算分块数，不信任客户端传入的 totalParts，防止恶意构造。
-8. **前端失败清理** — presignedUpload 失败时自动调用 `abortPresignedUpload` 清理 S3 碎片，避免资源泄漏。
+8. **前端失败清理** — presignedUpload 失败时自动调用 `abortPresignedUpload` 清理 OSS 碎片，避免资源泄漏。
 9. **事务原子性** — DeleteUploadSession 使用 GORM 事务原子删除 parts + session，避免中途失败产生孤儿记录。
 10. **故障处理** — Session 过期后 abort S3 upload；presigned URL 过期但 session 未过期时重新签发；AbortPresignedUpload 是幂等操作。

@@ -3,32 +3,17 @@
 本项目以 **Podman + podman-compose** 为一等公民，同时兼容 Docker / Docker Compose。
 Makefile 会自动检测 `podman` / `docker` 命令并使用。
 
-## 部署模式
-
-| | Mode A: local (轻量) | Mode B: s3 (完整) |
-|--|---|---|
-| **启动命令** | `make images && make up` | `make images-all && make up ENV_FILE=.env.s3 PROFILE="--profile s3"` |
-| **服务数** | 6 (consul, redis, user, file, gateway, frontend) | 10 (+ mysql, kafka, seaweedfs, file-worker) |
-| **数据库** | SQLite (容器内文件) | MySQL 8.0 |
-| **消息队列** | 进程内 goroutine | Kafka |
-| **对象存储** | 本地磁盘 | SeaweedFS |
-
 ## 服务组成
 
-| 服务 | 镜像 | 端口 | Profiles | 说明 |
-|------|------|------|----------|------|
-| consul | hashicorp/consul:1.19 | 8500 | - (always) | 服务注册与发现 |
-| redis | redis:7-alpine | 6379 | - (always) | 分块状态 + 磁盘用量计数 |
-| mysql | mysql:8.0 | 3306 | s3 | 数据库 (完整模式) |
-| kafka | apache/kafka:3.7.0 | 9092 | s3 | 消息队列 (完整模式) |
-| seaweedfs | chrislusf/seaweedfs:latest | 9333, 8333 | s3 | S3 兼容对象存储 (完整模式) |
-| user-service | 自构建 | 9001 (gRPC) | - (always) | 用户服务 |
-| file-service | 自构建 | 9002 (gRPC) | - (always) | 文件服务 |
-| gateway | 自构建 | 8080 (HTTP) | - (always) | API 网关 |
-| file-worker | 自构建 | - | s3 | Kafka 消费：冷迁移 (完整模式) |
-| frontend | 自构建 | 3000 (Nginx) | - (always) | Vue 3 SPA |
-
-`profiles: [s3]` 标记的服务只在 `--profile s3` 模式下启动。
+| 服务 | 镜像 | 端口 | 说明 |
+|------|------|------|------|
+| consul | hashicorp/consul:1.19 | 8500 | 服务注册与发现 |
+| redis | redis:7-alpine | 6379 | 分块状态 + 分布式锁 + 磁盘用量计数 |
+| mysql | mysql:8.0 | 3306 | 关系数据库 |
+| user-service | 自构建 | 9001 (gRPC) | 用户服务 |
+| file-service | 自构建 | 9002 (gRPC) | 文件服务 (纠删码 + 本地存储) |
+| gateway | 自构建 | 8080 (HTTP) | API 网关 (一致性哈希路由) |
+| frontend | 自构建 | 3000 (Nginx) | Vue 3 SPA |
 
 ## 快速启动
 
@@ -38,16 +23,12 @@ Makefile 会自动检测 `podman` / `docker` 命令并使用。
 > `make images` 统一使用 `--network host` 构建，确保任何环境都能成功。
 
 ```bash
-# Mode A: 轻量模式
+# 构建镜像并启动
 make images              # 构建 backend + frontend 镜像
-make up                  # 启动 (默认 .env.local)
-
-# Mode B: 完整模式
-make images-all          # 额外构建 file-worker
-make up ENV_FILE=.env.s3 PROFILE="--profile s3"
+make up                  # 启动全部服务 (默认 .env)
 
 # 仅基础设施 (本地开发)
-make infra-up
+make infra-up            # 启动 Consul + MySQL + Redis
 
 # 查看日志 / 停止服务
 make logs
@@ -56,8 +37,7 @@ make down
 
 如果你使用 Docker Compose（支持 `build.network`），也可以直接一步到位：
 ```bash
-docker compose --env-file .env.local up -d --build
-docker compose --env-file .env.s3 --profile s3 up -d --build
+docker compose --env-file .env up -d --build
 ```
 
 ## Makefile 命令
@@ -67,23 +47,18 @@ docker compose --env-file .env.s3 --profile s3 up -d --build
 make image-user       # 构建用户服务镜像
 make image-file       # 构建文件服务镜像
 make image-gateway    # 构建网关镜像
-make image-worker     # 构建 file-worker 镜像
 make image-frontend   # 构建前端镜像
-make images           # 构建全部 (不含 worker)
-make images-all       # 构建全部 (含 worker)
+make images           # 构建全部
 
 # Compose 操作
-make up               # 启动 (默认 .env.local)
+make up               # 启动 (默认 .env)
 make down             # 停止
 make ps               # 查看状态
 make logs             # 查看日志
 make clean-containers # 停止并清除数据卷
 
-# 自定义 env / profile
-make up ENV_FILE=.env.s3 PROFILE="--profile s3"
-
 # 本地开发 (不用容器)
-make infra-up         # 启动 Consul + Redis
+make infra-up         # 启动 Consul + MySQL + Redis
 make run-user         # 本地运行用户服务
 make run-file         # 本地运行文件服务
 make run-gateway      # 本地运行网关
@@ -111,10 +86,10 @@ COPY --from=builder /app/server /app/server
 - 基于 debian (golang:1.25 + bookworm-slim)，内置 gcc 无需网络下载
 - `CGO_ENABLED=1` 支持 SQLite 编译
 - `-mod=vendor` 离线构建，配合 `--network host` 保证任何网络环境都能成功
-- 支持通过 `--build-arg SERVICE=user|file|gateway|worker` 构建不同服务
+- 支持通过 `--build-arg SERVICE=user|file|gateway` 构建不同服务
 - `/app/data/` 存放 SQLite 数据库文件
-- `/app/store/` 存放本地模式的合并文件
-- worker 和 gateway 不需要 YAML 配置文件，从环境变量读取
+- `/app/store/` 存放本地文件 + 纠删码分片
+- gateway 不需要 YAML 配置文件，从环境变量读取
 
 ## Frontend Dockerfile
 
@@ -128,7 +103,7 @@ COPY --from=builder /app/server /app/server
 ## 启动顺序
 
 ```
-Consul → MySQL → Redis → Kafka
+Consul → MySQL → Redis
     ↓        ↓       ↓
  user-service (等待 MySQL + Consul healthy)
  file-service (等待 MySQL + Redis + Consul healthy)
@@ -140,33 +115,21 @@ docker-compose.yml 使用 `depends_on` + `condition` 控制启动顺序。
 
 ## 环境变量
 
-通过 `.env.local` 或 `.env.s3` 文件配置：
+通过 `.env` 文件配置：
 
-### .env.local (轻量模式)
 ```bash
-DB_DRIVER=sqlite
-SQLITE_PATH=/app/data/cloud_disk.db
-STORAGE_MODE=local
-PRIMARY_MAX_BYTES=10737418240
-FILE_STORE_DIR=/app/store
+DB_DRIVER=mysql              # 数据库驱动 (mysql/sqlite)
+DB_PASSWORD=root123          # MySQL 密码
+SQLITE_PATH=/app/data/cloud_disk.db  # SQLite 路径 (DB_DRIVER=sqlite 时)
+PRIMARY_MAX_BYTES=10737418240  # 本地磁盘上限 (10 GB)
+FILE_STORE_DIR=/app/store    # 文件存储目录
 JWT_SECRET=your_jwt_secret
 CONSUL_ADDR=consul:8500
 REDIS_ADDR=redis:6379
-```
-
-### .env.s3 (完整模式)
-```bash
-DB_DRIVER=mysql
-DB_PASSWORD=root123
-STORAGE_MODE=s3
-PRIMARY_MAX_BYTES=107374182400
-KAFKA_BROKERS=kafka:9092
-SEAWEEDFS_ENDPOINT=http://seaweedfs:8333
-SEAWEEDFS_BUCKET=light-cloud-disk
-JWT_SECRET=your_jwt_secret
-CONSUL_ADDR=consul:8500
-REDIS_ADDR=redis:6379
-# OSS (optional)
+ERASURE_DATA_SHARDS=4        # 纠删码数据分片数
+ERASURE_PARITY_SHARDS=2      # 纠删码校验分片数
+ERASURE_MIN_FILE_SIZE=1048576  # 纠删码最小文件 (1 MB)
+# OSS (冷存)
 OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
 OSS_ACCESS_KEY_ID=your_key
 OSS_ACCESS_KEY_SECRET=your_secret

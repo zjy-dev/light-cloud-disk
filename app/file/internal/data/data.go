@@ -16,7 +16,7 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 )
 
-var ProviderSet = wire.NewSet(NewData, NewFileRepo, NewMessageProducer, NewSeaweedFSClient, NewOSSClient)
+var ProviderSet = wire.NewSet(NewData, NewFileRepo, NewMessageProducer, NewOSSClient)
 
 type Data struct {
 	db    *gorm.DB
@@ -84,7 +84,7 @@ func NewData(c *conf.Data, logger log.Logger) (*Data, func(), error) {
 	}
 
 	// Auto-migrate file-related tables
-	if err := db.AutoMigrate(&FilePO{}, &FileStorePO{}, &SharePO{}, &UploadSessionPO{}, &UploadPartPO{}); err != nil {
+	if err := db.AutoMigrate(&FilePO{}, &FileStorePO{}, &ErasureShardPO{}, &SharePO{}, &UploadSessionPO{}, &UploadPartPO{}); err != nil {
 		helper.Errorf("Auto migration for file tables failed: %v", err)
 	}
 

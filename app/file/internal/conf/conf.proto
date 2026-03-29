@@ -32,15 +32,8 @@ message Data {
     google.protobuf.Duration read_timeout = 1;
     google.protobuf.Duration write_timeout = 2;
   }
-  message Kafka {
-    repeated string brokers = 1;
-    string transfer_topic = 2;
-    string thumbnail_topic = 3;
-    string cloud_migrate_topic = 4;
-  }
   Database database = 1;
   Redis redis = 2;
-  Kafka kafka = 3;
 }
 
 message Upload {
@@ -50,10 +43,7 @@ message Upload {
 }
 
 message Storage {
-  // "local" = local disk primary, "s3" = SeaweedFS (S3) primary
-  string mode = 1;
-
-  // Primary storage capacity limit (local disk in local mode, SeaweedFS in s3 mode)
+  // Primary storage capacity limit (local disk)
   int64 primary_max_bytes = 2;
 
   // LRU eviction triggers when primary usage exceeds this percentage
@@ -61,14 +51,6 @@ message Storage {
 
   // After eviction, reduce usage down to this percentage of threshold (default 90)
   int32 evict_target_percent = 4; // default 90
-
-  message SeaweedFS {
-    string endpoint = 1;
-    string region = 2;
-    string bucket = 3;
-    string access_key = 4;
-    string secret_key = 5;
-  }
 
   message OSS {
     string endpoint = 1;
@@ -78,6 +60,12 @@ message Storage {
     string region = 5;
   }
 
-  SeaweedFS seaweedfs = 5;
+  message ErasureCoding {
+    int32 data_shards = 1; // default 4
+    int32 parity_shards = 2; // default 2
+    int64 min_file_size = 3; // default 1048576 (1MB)
+  }
+
   OSS oss = 6;
+  ErasureCoding erasure_coding = 7;
 }

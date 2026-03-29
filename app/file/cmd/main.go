@@ -79,15 +79,11 @@ func newUserServiceClient(r *consul.Registry) userv1.UserServiceClient {
 
 func provideStorageConfig(c *conf.Storage) *biz.StorageConfig {
 	cfg := &biz.StorageConfig{
-		Mode:            biz.ModeLocal,
 		PrimaryMaxBytes: 10 * 1024 * 1024 * 1024, // 10 GB default
 		ThresholdPct:    80,
 		EvictTargetPct:  90,
 	}
 	if c != nil {
-		if c.Mode != "" {
-			cfg.Mode = c.Mode
-		}
 		if c.PrimaryMaxBytes > 0 {
 			cfg.PrimaryMaxBytes = c.PrimaryMaxBytes
 		}
@@ -99,9 +95,6 @@ func provideStorageConfig(c *conf.Storage) *biz.StorageConfig {
 		}
 	}
 	// Env overrides (useful for container deployments)
-	if m := os.Getenv("STORAGE_MODE"); m != "" {
-		cfg.Mode = m
-	}
 	if v := os.Getenv("PRIMARY_MAX_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.PrimaryMaxBytes = n
@@ -119,6 +112,27 @@ func provideStoreDir(u *conf.Upload) string {
 		return u.StoreDir
 	}
 	return "./store"
+}
+
+// provideErasureConfig reads erasure coding config from env vars.
+func provideErasureConfig() *biz.ErasureConfig {
+	cfg := &biz.ErasureConfig{DataShards: 4, ParityShards: 2, MinFileSize: 1 << 20}
+	if v := os.Getenv("ERASURE_DATA_SHARDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.DataShards = n
+		}
+	}
+	if v := os.Getenv("ERASURE_PARITY_SHARDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ParityShards = n
+		}
+	}
+	if v := os.Getenv("ERASURE_MIN_FILE_SIZE"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			cfg.MinFileSize = n
+		}
+	}
+	return cfg
 }
 
 func main() {

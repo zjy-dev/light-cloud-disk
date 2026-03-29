@@ -36,14 +36,12 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/user-service-linux-amd64 ./app/user/cmd
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/file-service-linux-amd64 ./app/file/cmd
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/gateway-linux-amd64 ./app/gateway/cmd
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/file-worker-linux-amd64 ./app/file/cmd/worker
 
       - name: Build Linux ARM64 binaries
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/user-service-linux-arm64 ./app/user/cmd
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/file-service-linux-arm64 ./app/file/cmd
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/gateway-linux-arm64 ./app/gateway/cmd
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.Version=${{ github.ref_name }}" -o dist/file-worker-linux-arm64 ./app/file/cmd/worker
 
       - name: Create checksums
         run: |
@@ -58,9 +56,7 @@ jobs:
             dist/user-service-linux-amd64
             dist/file-service-linux-amd64
             dist/gateway-linux-amd64
-            dist/file-worker-linux-amd64
             dist/user-service-linux-arm64
             dist/file-service-linux-arm64
             dist/gateway-linux-arm64
-            dist/file-worker-linux-arm64
             dist/checksums.txt

@@ -237,6 +237,14 @@ export function useUpload() {
       // Branch based on upload mode.
       const uploadMode = checkResult.uploadMode ?? 'direct'
       const uploadedChunks = checkResult.uploadedChunks ?? []
+      const uploadStatus = checkResult.uploadStatus
+
+      // Cooperative upload: another client is already uploading this file.
+      // We join by uploading only the missing chunks.
+      if (uploadStatus === 'uploading' && uploadedChunks.length > 0) {
+        task.progress = 15 + Math.round((uploadedChunks.length / totalChunks) * 70)
+      }
+
       if (uploadMode === 'presigned') {
         await presignedUpload(task, parentId, fileMd5, onComplete)
       } else {

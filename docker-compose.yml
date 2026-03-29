@@ -1,11 +1,8 @@
 # Podman/Docker Compose configuration
 #
-# Dual-mode deployment:
-#   Local mode: podman-compose --env-file .env.local up -d
-#   S3 mode:    podman-compose --env-file .env.s3 --profile s3 up -d
+# Usage: podman-compose --env-file .env up -d
 #
-# Local mode uses SQLite + local disk + goroutine MQ (no MySQL/Kafka/SeaweedFS).
-# S3 mode uses MySQL + SeaweedFS + Kafka + file-worker (full infrastructure).
+# Single-mode: local disk + Redis + Consul + MySQL (or SQLite via DB_DRIVER)
 
 services:
   consul:
@@ -35,7 +32,6 @@ services:
   mysql:
     image: docker.io/library/mysql:8.0
     container_name: cloud-disk-mysql
-    profiles: [s3]
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root123}
       MYSQL_DATABASE: ${DB_NAME:-cloud_disk}
@@ -80,74 +76,6 @@ services:
     networks:
       - cloud-disk
 
-  kafka:
-    image: docker.io/apache/kafka:3.7.0
-    container_name: cloud-disk-kafka
-    profiles: [s3]
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-      NO_PROXY: "*"
-      no_proxy: "*"
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
-      http_proxy: ""
-      https_proxy: ""
-    ports:
-      - "9092:9092"
-    volumes:
-      - kafka_data:/var/lib/kafka/data
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092 || exit 1",
-        ]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-    networks:
-      - cloud-disk
-
-  seaweedfs:
-    image: docker.io/chrislusf/seaweedfs:latest
-    container_name: cloud-disk-seaweedfs
-    profiles: [s3]
-    command: "server -s3 -dir=/data"
-    environment:
-      NO_PROXY: "*"
-      no_proxy: "*"
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
-      http_proxy: ""
-      https_proxy: ""
-    ports:
-      - "8333:8333"
-      - "9333:9333"
-    volumes:
-      - seaweedfs_data:/data
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -qO- http://localhost:9333/cluster/status || exit 1",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - cloud-disk
-
   user-service:
     build:
       context: .
@@ -178,6 +106,8 @@ services:
     volumes:
       - user_data:/app/data
     depends_on:
+      mysql:
+        condition: service_healthy
       consul:
         condition: service_healthy
     networks:
@@ -202,17 +132,15 @@ services:
       SQLITE_PATH: ${SQLITE_PATH:-/app/data/file.db}
       REDIS_ADDR: redis:6379
       CONSUL_ADDR: consul:8500
-      STORAGE_MODE: ${STORAGE_MODE:-local}
       PRIMARY_MAX_BYTES: ${PRIMARY_MAX_BYTES:-53687091200}
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-}
-      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-}
-      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
-      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
       OSS_REGION: ${OSS_REGION:-cn-hangzhou}
       OSS_BUCKET: ${OSS_BUCKET:-light-cloud-disk}
+      ERASURE_DATA_SHARDS: ${ERASURE_DATA_SHARDS:-4}
+      ERASURE_PARITY_SHARDS: ${ERASURE_PARITY_SHARDS:-2}
+      ERASURE_MIN_FILE_SIZE: ${ERASURE_MIN_FILE_SIZE:-1048576}
       FILE_TMP_DIR: /app/tmp
       FILE_STORE_DIR: /app/store
       NO_PROXY: "*"
@@ -228,66 +156,14 @@ services:
       - file_store:/app/store
       - file_data:/app/data
     depends_on:
+      mysql:
+        condition: service_healthy
       redis:
         condition: service_healthy
       consul:
         condition: service_healthy
       user-service:
         condition: service_started
-    networks:
-      - cloud-disk
-
-  # NOTE: In s3 mode, file-service additionally needs mysql and seaweedfs.
-  # Since depends_on cannot be conditional on profiles, the s3 .env sets
-  # DB_DRIVER=mysql and SEAWEEDFS_ENDPOINT which are only available when
-  # --profile s3 brings up those containers. Start s3 mode with:
-  #   podman-compose --env-file .env.s3 --profile s3 up -d
-
-  file-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE: worker
-        VERSION: ${VERSION:-dev}
-    image: light-cloud-disk/file-worker:${VERSION:-latest}
-    container_name: cloud-disk-file-worker
-    profiles: [s3]
-    environment:
-      DB_HOST: mysql
-      DB_PORT: "3306"
-      DB_USER: root
-      DB_PASSWORD: ${DB_PASSWORD:-root123}
-      DB_NAME: ${DB_NAME:-cloud_disk}
-      REDIS_ADDR: redis:6379
-      KAFKA_BROKERS: kafka:9092
-      KAFKA_GROUP_ID: file-worker-group
-      KAFKA_CLOUD_MIGRATE_TOPIC: cloud-migrate
-      KAFKA_THUMBNAIL_TOPIC: file-thumbnail
-      SEAWEEDFS_ENDPOINT: http://seaweedfs:8333
-      SEAWEEDFS_ACCESS_KEY: ${SEAWEEDFS_ACCESS_KEY:-}
-      SEAWEEDFS_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY:-}
-      SEAWEEDFS_BUCKET: light-cloud-disk
-      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
-      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
-      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
-      OSS_REGION: ${OSS_REGION:-cn-hangzhou}
-      OSS_BUCKET: ${OSS_BUCKET:-light-cloud-disk}
-      NO_PROXY: "*"
-      no_proxy: "*"
-      HTTP_PROXY: ""
-      HTTPS_PROXY: ""
-      http_proxy: ""
-      https_proxy: ""
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      seaweedfs:
-        condition: service_healthy
     networks:
       - cloud-disk
 
@@ -347,8 +223,6 @@ volumes:
   consul_data:
   mysql_data:
   redis_data:
-  kafka_data:
-  seaweedfs_data:
   file_tmp:
   file_store:
   file_data:

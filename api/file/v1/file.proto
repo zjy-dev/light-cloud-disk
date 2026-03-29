@@ -63,6 +63,8 @@ message CheckUploadReply {
   bool disk_full = 3;
   // "direct" = chunks flow through backend; "presigned" = client uploads to S3/OSS directly
   string upload_mode = 4;
+  // "none" | "uploading" | "completed" — indicates concurrent upload state
+  string upload_status = 5;
 }
 
 // Chunk upload
@@ -338,4 +340,11 @@ message AbortPresignedUploadRequest {
 
 message AbortPresignedUploadReply {
   bool success = 1;
+}
+
+// ErasureShardInfo represents a single shard for file redundancy display
+message ErasureShardInfo {
+  int32 shard_index = 1;
+  bool is_parity = 2;
+  bool is_healthy = 3; // false if shard file is missing/corrupted
 }

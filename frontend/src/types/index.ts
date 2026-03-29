@@ -46,6 +46,7 @@ export interface CheckUploadReply {
   uploadedChunks: number[]
   diskFull?: boolean
   uploadMode?: 'direct' | 'presigned'
+  uploadStatus?: string
 }
 
 export interface UploadChunkReply {

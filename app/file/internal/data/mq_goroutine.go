@@ -2,7 +2,6 @@ package data
 
 import (
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,15 +17,25 @@ const (
 	mqShutdownTimeout = 10 * time.Second
 )
 
+// NewMessageProducer creates a goroutine-backed message queue.
+func NewMessageProducer(
+	repo biz.FileRepo,
+	cloudStore biz.CloudStorage,
+	storeDir string,
+	logger log.Logger,
+) (biz.MessageProducer, func(), error) {
+	mq, cleanup := newGoroutineMQ(repo, cloudStore, storeDir, logger)
+	return mq, cleanup, nil
+}
+
 // goroutineMQ implements biz.MessageProducer using in-process buffered channels.
-// Used in place of Kafka when KAFKA_BROKERS is not configured,
+// Used as the default MQ when KAFKA_BROKERS is not configured,
 // so that the single-server local mode works without external MQ infra.
 type goroutineMQ struct {
 	cloudMigrateCh chan *biz.CloudMigrateMessage
 	thumbnailCh    chan *biz.ThumbnailMessage
 
 	repo       biz.FileRepo
-	objStore   biz.ObjectStorage
 	cloudStore biz.CloudStorage
 	storeDir   string
 
@@ -39,7 +48,6 @@ type goroutineMQ struct {
 // cloud-migrate and thumbnail messages in-process.
 func newGoroutineMQ(
 	repo biz.FileRepo,
-	objStore biz.ObjectStorage,
 	cloudStore biz.CloudStorage,
 	storeDir string,
 	logger log.Logger,
@@ -50,7 +58,6 @@ func newGoroutineMQ(
 		cloudMigrateCh: make(chan *biz.CloudMigrateMessage, mqBufferSize),
 		thumbnailCh:    make(chan *biz.ThumbnailMessage, mqBufferSize),
 		repo:           repo,
-		objStore:       objStore,
 		cloudStore:     cloudStore,
 		storeDir:       storeDir,
 		log:            helper,
@@ -61,7 +68,7 @@ func newGoroutineMQ(
 	go mq.consumeCloudMigrate()
 	go mq.consumeThumbnails()
 
-	helper.Info("Goroutine MQ started (in-process message processing, no Kafka).")
+	helper.Info("Goroutine MQ started (in-process message processing).")
 
 	cleanup := func() {
 		close(mq.done)
@@ -134,43 +141,33 @@ func (mq *goroutineMQ) consumeThumbnails() {
 	}
 }
 
-// handleCloudMigrate downloads from primary storage and uploads to OSS,
+// handleCloudMigrate reads from local storage and uploads to OSS,
 // then updates DB and disk usage counters.
 func (mq *goroutineMQ) handleCloudMigrate(msg *biz.CloudMigrateMessage) error {
 	ctx := context.Background()
 
 	mq.log.Infof("goroutine-mq: cloud-migrate md5=%s key=%s size=%d", msg.FileMD5, msg.SourceKey, msg.FileSize)
 
-	// Determine current storage type from DB
 	store, err := mq.repo.FindStoreByMD5(ctx, msg.FileMD5)
 	if err != nil {
 		return err
 	}
 
-	// 1) Read from primary storage
-	var reader io.ReadCloser
-	switch store.StorageType {
-	case biz.StorageLocal:
-		localPath := filepath.Join(mq.storeDir, msg.SourceKey)
-		f, err := os.Open(localPath)
-		if err != nil {
-			return err
-		}
-		reader = f
-	case biz.StorageSeaweedFS:
-		r, err := mq.objStore.Get(ctx, msg.SourceKey)
-		if err != nil {
-			return err
-		}
-		reader = r
-	default:
+	if store.StorageType != biz.StorageLocal {
 		mq.log.Warnf("goroutine-mq: skipping cloud-migrate for %s (already on %s)", msg.FileMD5, store.StorageType)
 		return nil
 	}
-	defer reader.Close()
+
+	// 1) Read from local storage
+	localPath := filepath.Join(mq.storeDir, msg.SourceKey)
+	f, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
 	// 2) Upload to OSS
-	if err := mq.cloudStore.Put(ctx, msg.SourceKey, reader, msg.FileSize); err != nil {
+	if err := mq.cloudStore.Put(ctx, msg.SourceKey, f, msg.FileSize); err != nil {
 		return err
 	}
 
@@ -179,17 +176,11 @@ func (mq *goroutineMQ) handleCloudMigrate(msg *biz.CloudMigrateMessage) error {
 		return err
 	}
 
-	// 4) Delete from primary storage
-	switch store.StorageType {
-	case biz.StorageLocal:
-		localPath := filepath.Join(mq.storeDir, msg.SourceKey)
-		_ = os.Remove(localPath)
-	case biz.StorageSeaweedFS:
-		_ = mq.objStore.Delete(ctx, msg.SourceKey)
-	}
+	// 4) Delete local file
+	_ = os.Remove(localPath)
 
 	// 5) Decrease primary disk usage counter
-	_ = mq.repo.IncrDiskUsage(ctx, store.StorageType, -msg.FileSize)
+	_ = mq.repo.IncrDiskUsage(ctx, "local", -msg.FileSize)
 
 	mq.log.Infof("goroutine-mq: cloud-migrate done for md5=%s, moved %d bytes to OSS", msg.FileMD5, msg.FileSize)
 	return nil

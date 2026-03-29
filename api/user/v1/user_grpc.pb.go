@@ -34,7 +34,7 @@ type UserServiceClient interface {
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginReply, error)
 	GetUserInfo(ctx context.Context, in *GetUserInfoRequest, opts ...grpc.CallOption) (*GetUserInfoReply, error)
 	UpdateUserInfo(ctx context.Context, in *UpdateUserInfoRequest, opts ...grpc.CallOption) (*UpdateUserInfoReply, error)
-	// 内部 RPC，供 file-service 调用
+	// Internal RPC used by file service
 	UpdateStorageUsed(ctx context.Context, in *UpdateStorageUsedRequest, opts ...grpc.CallOption) (*UpdateStorageUsedReply, error)
 }
 
@@ -104,7 +104,7 @@ type UserServiceServer interface {
 	Login(context.Context, *LoginRequest) (*LoginReply, error)
 	GetUserInfo(context.Context, *GetUserInfoRequest) (*GetUserInfoReply, error)
 	UpdateUserInfo(context.Context, *UpdateUserInfoRequest) (*UpdateUserInfoReply, error)
-	// 内部 RPC，供 file-service 调用
+	// Internal RPC used by file service
 	UpdateStorageUsed(context.Context, *UpdateStorageUsedRequest) (*UpdateStorageUsedReply, error)
 	mustEmbedUnimplementedUserServiceServer()
 }

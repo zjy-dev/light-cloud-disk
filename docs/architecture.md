@@ -15,11 +15,11 @@
 │     (HTTP :8080)                │
 │     - JWT 认证                  │
 │     - CORS 跨域                │
-│     - 请求路由                  │
+│     - MD5 一致性哈希路由         │
 │     - HTTP→gRPC 协议转换        │
 └────────┬───────────────┬────────┘
     gRPC │               │ gRPC
-    (Consul 发现)        (Consul 发现)
+    (Consul 发现)        (Consul 发现 + hash ring)
          ▼               ▼
 ┌────────────────┐ ┌────────────────┐
 │  User Service  │ │  File Service  │
@@ -29,19 +29,23 @@
 │  - 用户注册/登录│ │  - 分块上传    │
 │  - 信息管理     │ │  - 秒传/续传   │
 │  - 存储配额     │ │  - 文件管理    │
+│                │ │  - 纠删码编码   │
 │                │ │  - 回收站/分享  │
 └───────┬────────┘ └──┬────┬───┬───┘
         │             │    │   │
         ▼             ▼    ▼   ▼
     ┌────────┐   ┌──────┐ ┌─────┐ ┌───────────┐
-    │ MySQL  │   │MySQL │ │Redis│ │ SeaweedFS │
+    │ MySQL  │   │MySQL │ │Redis│ │ 本地磁盘   │
+    │/SQLite │   │/SQLite│ │     │ │ (EC shards)│
     └────────┘   └──────┘ └─────┘ └───────────┘
-                                        │
-    ← ─ ─ Consul 服务注册与发现 ─ ─ →   │
-                                        ▼
-    File Service ──→ Kafka ──→     ┌──────────┐
-    (cloud-migrate)   file-worker → │ 阿里云 OSS│
-                                    └──────────┘
+
+    ← ─ ─ Consul 服务注册与发现 ─ ─ →
+
+    File Service ──→ goroutine MQ ──→ 阿里云 OSS (冷存)
+    (LRU 淘汰触发)
+
+    分布式锁: Redis SETNX + Lua 脚本
+    纠删码:   Reed-Solomon 4+2 (本地容错)
 ```
 
 ## 分层架构 (Clean Architecture)

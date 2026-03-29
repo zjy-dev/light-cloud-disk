@@ -7,7 +7,7 @@
 package main
 
 import (
-	"github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
+	v1 "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/data"
@@ -27,24 +27,21 @@ func wireApp(confServer *conf.Server, confData *conf.Data, upload *conf.Upload, 
 	}
 	fileRepo := data.NewFileRepo(dataData, logger)
 	userClient := data.NewUserClient(userServiceClient, logger)
-	objectStorage, err := data.NewSeaweedFSClient(storage, logger)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
 	cloudStorage, err := data.NewOSSClient(storage, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	messageProducer, cleanup2, err := data.NewMessageProducer(confData, storage, fileRepo, objectStorage, cloudStorage, logger)
+	string2 := provideStoreDir(upload)
+	messageProducer, cleanup2, err := data.NewMessageProducer(fileRepo, cloudStorage, string2, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
 	storageConfig := provideStorageConfig(storage)
-	string2 := provideStoreDir(upload)
-	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, objectStorage, cloudStorage, storageConfig, string2, logger)
+	erasureConfig := provideErasureConfig()
+	erasureEncoder := data.NewErasureEncoder()
+	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, cloudStorage, storageConfig, erasureConfig, erasureEncoder, string2, logger)
 	fileService := service.NewFileService(fileUsecase, logger)
 	grpcServer := server.NewGRPCServer(confServer, fileService, logger)
 	app := newApp(logger, grpcServer, registry)
