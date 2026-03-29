@@ -66,7 +66,7 @@ wire-file:
 
 .PHONY: build
 # Build all services
-build: build-user build-file build-gateway build-worker
+build: build-user build-file build-gateway
 
 .PHONY: build-user
 # Build user service
@@ -77,11 +77,6 @@ build-user:
 # Build file service
 build-file:
 	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/file-service ./app/file/cmd
-
-.PHONY: build-worker
-# Build file worker
-build-worker:
-	mkdir -p bin/ && go build -ldflags "-X main.Version=$(VERSION)" -o ./bin/file-worker ./app/file/cmd/worker
 
 .PHONY: build-gateway
 # Build gateway service
@@ -115,11 +110,6 @@ run-file:
 # Run gateway service locally
 run-gateway:
 	go run ./app/gateway/cmd
-
-.PHONY: run-worker
-# Run file worker locally
-run-worker:
-	go run ./app/file/cmd/worker
 
 # --- Frontend ---
 
@@ -171,11 +161,6 @@ image-user:
 image-file:
 	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=file --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-service:$(VERSION) .
 
-.PHONY: image-worker
-# Build file worker container image
-image-worker:
-	$(CONTAINER_RUNTIME) build --network host --build-arg SERVICE=worker --build-arg VERSION=$(VERSION) -t light-cloud-disk/file-worker:$(VERSION) .
-
 .PHONY: image-gateway
 # Build gateway service container image
 image-gateway:
@@ -190,42 +175,35 @@ image-frontend:
 # Build all container images (backend + frontend)
 images: image-user image-file image-gateway image-frontend
 
-.PHONY: images-all
-# Build all container images including s3-mode worker
-images-all: images image-worker
-
 # --- Compose commands ---
-# ENV_FILE defaults to .env.local (lightweight SQLite mode);
-# override with: make up ENV_FILE=.env.s3 PROFILE="--profile s3"
-ENV_FILE ?= .env.local
-PROFILE ?=
+ENV_FILE ?= .env
 
 .PHONY: up
 # Start services (pre-built images required: run 'make images' first)
 up:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) up -d
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) up -d
 
 .PHONY: down
 down:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) down
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) down
 
 .PHONY: logs
 logs:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) logs -f
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) logs -f
 
 .PHONY: ps
 ps:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) ps
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) ps
 
 # Infrastructure only (for local development without containers)
 .PHONY: infra-up
-# Start infra services (Consul, Redis; add mysql/kafka with PROFILE="--profile s3")
+# Start infra services (Consul, MySQL, Redis)
 infra-up:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) up -d consul redis
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) up -d consul mysql redis
 
 .PHONY: infra-down
 infra-down:
-	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) $(PROFILE) down consul redis
+	$(COMPOSE_RUNTIME) --env-file $(ENV_FILE) down consul mysql redis
 
 # Clean containers and volumes
 .PHONY: clean-containers

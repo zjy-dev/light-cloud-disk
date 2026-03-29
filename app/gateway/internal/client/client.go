@@ -136,6 +136,20 @@ func (hr *hashRouter) refresh() {
 	hr.mu.Lock()
 	defer hr.mu.Unlock()
 
+	// Detect changes for logging
+	prevCount := len(hr.clients)
+	var added, removed []string
+	for addr := range addrs {
+		if _, ok := hr.clients[addr]; !ok {
+			added = append(added, addr)
+		}
+	}
+	for addr := range hr.clients {
+		if _, ok := addrs[addr]; !ok {
+			removed = append(removed, addr)
+		}
+	}
+
 	// Rebuild ring
 	hr.ring = hr.ring[:0]
 	hr.ringMap = make(map[uint32]string, len(addrs)*virtualNodes)
@@ -168,6 +182,12 @@ func (hr *hashRouter) refresh() {
 			_ = entry.conn.Close()
 			delete(hr.clients, addr)
 		}
+	}
+
+	// Log ring rebalance events
+	if len(added) > 0 || len(removed) > 0 {
+		log.Infof("hashRouter: ring rebalanced — instances %d→%d, added=%v, removed=%v",
+			prevCount, len(hr.clients), added, removed)
 	}
 }
 

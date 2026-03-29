@@ -689,7 +689,7 @@ func TestFileHandler_GetDiskUsage_Success(t *testing.T) {
 			return &filev1.GetDiskUsageReply{
 				PrimaryUsedBytes: 2048,
 				PrimaryMaxBytes:  53687091200,
-				PrimaryType:      "seaweedfs",
+				PrimaryType:      "local",
 			}, nil
 		},
 	}

@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"errors"
@@ -17,12 +18,9 @@ import (
 
 // Storage type constants
 const (
-	StorageLocal     = "local"     // files kept on local disk (Mode A)
-	StorageSeaweedFS = "seaweedfs" // files in SeaweedFS S3 (Mode B)
-	StorageOSS       = "oss"       // cold-tier files in Alibaba Cloud OSS
-
-	ModeLocal = "local" // small-server mode: local disk as primary
-	ModeS3    = "s3"    // large-server mode: SeaweedFS as primary
+	StorageLocal   = "local"    // files kept on local disk
+	StorageLocalEC = "local_ec" // files stored with erasure coding shards on local disk
+	StorageOSS     = "oss"      // cold-tier files in Alibaba Cloud OSS
 )
 
 var (
@@ -37,6 +35,8 @@ var (
 	ErrSessionCompleted = errors.New("upload session already completed")
 	ErrIncompleteUpload = errors.New("not all parts uploaded yet")
 	ErrUnauthorized     = errors.New("not authorized to access this session")
+	ErrChunkLocked      = errors.New("chunk is locked by another writer")
+	ErrMergeLocked      = errors.New("merge is locked by another process")
 )
 
 type File struct {
@@ -59,10 +59,21 @@ type FileStore struct {
 	FileMD5        string
 	Size           int64
 	StorePath      string
-	StorageType    string // "seaweedfs" or "oss"
+	StorageType    string // "local", "local_ec", or "oss"
+	UploadStatus   string // "uploading" or "completed"
 	RefCount       int32
 	LastAccessedAt time.Time
 	CreatedAt      time.Time
+}
+
+type ErasureShard struct {
+	ID          int64
+	FileStoreID int64
+	ShardIndex  int32
+	ShardPath   string
+	ShardSize   int64
+	IsParity    bool
+	Checksum    string
 }
 
 type Share struct {
@@ -92,7 +103,7 @@ type UploadSession struct {
 	FileSize      int64
 	TotalParts    int32
 	PartSize      int64  // bytes per part (last may be smaller)
-	StorageTarget string // "seaweedfs" or "oss"
+	StorageTarget string // "oss"
 	ObjectKey     string // S3/OSS key
 	S3UploadID    string // from InitMultipartUpload
 	Status        string // "uploading", "completed", "aborted"
@@ -109,15 +120,19 @@ type UploadedPart struct {
 	UploadedAt time.Time
 }
 
-// StorageConfig holds storage tier configuration from conf.proto.
-// Mode decides the primary storage backend:
-//   - "local": local disk is primary, OSS is the eviction target
-//   - "s3":    SeaweedFS is primary, OSS is the eviction target
+// StorageConfig holds storage tier configuration.
+// Local disk is the primary storage, OSS is the eviction target.
 type StorageConfig struct {
-	Mode            string // "local" or "s3"
-	PrimaryMaxBytes int64  // capacity of the primary storage (local disk or SeaweedFS)
-	ThresholdPct    int32  // eviction trigger, e.g. 80 means 80 %
-	EvictTargetPct  int32  // evict down to this % of threshold (default 90)
+	PrimaryMaxBytes int64 // capacity of the local disk primary storage
+	ThresholdPct    int32 // eviction trigger, e.g. 80 means 80 %
+	EvictTargetPct  int32 // evict down to this % of threshold (default 90)
+}
+
+// ErasureConfig holds erasure coding parameters.
+type ErasureConfig struct {
+	DataShards   int   // number of data shards (default 4)
+	ParityShards int   // number of parity shards (default 2)
+	MinFileSize  int64 // minimum file size for erasure coding (default 1 MB)
 }
 
 // FileRepo is the data-access interface for metadata and chunk operations
@@ -142,16 +157,29 @@ type FileRepo interface {
 	FindLRUStores(ctx context.Context, storageType string, limit int) ([]*FileStore, error)
 	SumSizeByStorageType(ctx context.Context, storageType string) (int64, error)
 
+	// FileStore status operations (concurrent upload safety)
+	CreateStoreWithStatus(ctx context.Context, store *FileStore) (*FileStore, error)
+	UpdateStoreStatus(ctx context.Context, id int64, status string) error
+	FindStoreByMD5AndStatus(ctx context.Context, md5, status string) (*FileStore, error)
+
 	// Share operations
 	CreateShare(ctx context.Context, share *Share) error
 	FindShareByID(ctx context.Context, id string) (*Share, error)
 	DeleteExpiredShares(ctx context.Context) error
 
-	// Chunk upload operations (Redis + local disk)
+	// Distributed lock operations (Redis)
+	AcquireChunkLock(ctx context.Context, fileMD5 string, chunkIndex int32, ttl time.Duration) (bool, error)
+	ReleaseChunkLock(ctx context.Context, fileMD5 string, chunkIndex int32) error
+	AcquireMergeLock(ctx context.Context, fileMD5 string, ttl time.Duration) (bool, error)
+	ReleaseMergeLock(ctx context.Context, fileMD5 string) error
+
+	// Chunk upload operations (Redis SET + local disk)
+	AddUploadedChunk(ctx context.Context, fileMD5 string, chunkIndex int32) error
+	IsChunkUploaded(ctx context.Context, fileMD5 string, chunkIndex int32) (bool, error)
+	CountUploadedChunks(ctx context.Context, fileMD5 string) (int32, error)
 	GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int32, error)
 	SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error
 	MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error)
-	SaveChunkInfo(ctx context.Context, chunk *ChunkInfo) error
 	ClearChunkInfo(ctx context.Context, fileMD5 string) error
 
 	// Disk usage operations (Redis atomic counters)
@@ -166,6 +194,10 @@ type FileRepo interface {
 	SaveUploadPart(ctx context.Context, sessionID string, partNumber int32, etag string, size int64) error
 	FindUploadedParts(ctx context.Context, sessionID string) ([]UploadedPart, error)
 	DeleteUploadSession(ctx context.Context, sessionID string) error
+
+	// Erasure coding shard operations
+	CreateErasureShard(ctx context.Context, shard *ErasureShard) error
+	FindErasureShards(ctx context.Context, fileStoreID int64) ([]*ErasureShard, error)
 }
 
 // UserClient is the cross-service gRPC interface for user operations
@@ -177,20 +209,6 @@ type UserClient interface {
 type CompletedPart struct {
 	PartNumber int32
 	ETag       string
-}
-
-// ObjectStorage abstracts SeaweedFS or any S3-compatible object storage
-type ObjectStorage interface {
-	Put(ctx context.Context, key string, reader io.Reader, size int64) error
-	Delete(ctx context.Context, key string) error
-	Get(ctx context.Context, key string) (io.ReadCloser, error)
-	PresignGetURL(ctx context.Context, key string, expires time.Duration) (string, error)
-
-	// Multipart upload (for presigned uploads)
-	InitMultipartUpload(ctx context.Context, key string) (uploadID string, err error)
-	PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32, expires time.Duration) (string, error)
-	CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []CompletedPart) error
-	AbortMultipartUpload(ctx context.Context, key, uploadID string) error
 }
 
 // CloudStorage abstracts cloud object storage such as Alibaba Cloud OSS
@@ -221,11 +239,18 @@ type ThumbnailMessage struct {
 	FileType string `json:"file_type"`
 }
 
-// MessageProducer sends async messages to Kafka
+// MessageProducer sends async messages for cloud migration
 type MessageProducer interface {
 	SendCloudMigrateMessage(ctx context.Context, msg *CloudMigrateMessage) error
 	SendThumbnailMessage(ctx context.Context, msg *ThumbnailMessage) error
 	Close() error
+}
+
+// ErasureEncoder abstracts Reed-Solomon encode/decode operations for testability.
+type ErasureEncoder interface {
+	Encode(filePath, storeDir, fileMD5 string, dataShards, parityShards int) (shardPaths []string, err error)
+	Reconstruct(shardPaths []string, dataShards, parityShards int) ([]byte, error)
+	ShardChecksum(path string) (string, error)
 }
 
 // FileUsecase contains core file business logic
@@ -233,9 +258,10 @@ type FileUsecase struct {
 	repo       FileRepo
 	userClient UserClient
 	mq         MessageProducer
-	objStore   ObjectStorage
 	cloudStore CloudStorage
 	storageCfg *StorageConfig
+	erasureCfg *ErasureConfig
+	erasureEnc ErasureEncoder
 	storeDir   string // local file store directory (from Upload.StoreDir)
 	log        *log.Helper
 }
@@ -244,87 +270,133 @@ func NewFileUsecase(
 	repo FileRepo,
 	userClient UserClient,
 	mq MessageProducer,
-	objStore ObjectStorage,
 	cloudStore CloudStorage,
 	storageCfg *StorageConfig,
+	erasureCfg *ErasureConfig,
+	erasureEnc ErasureEncoder,
 	storeDir string,
 	logger log.Logger,
 ) *FileUsecase {
+	if erasureCfg == nil {
+		erasureCfg = &ErasureConfig{DataShards: 4, ParityShards: 2, MinFileSize: 1 << 20}
+	}
 	return &FileUsecase{
 		repo:       repo,
 		userClient: userClient,
 		mq:         mq,
-		objStore:   objStore,
 		cloudStore: cloudStore,
 		storageCfg: storageCfg,
+		erasureCfg: erasureCfg,
+		erasureEnc: erasureEnc,
 		storeDir:   storeDir,
 		log:        log.NewHelper(logger),
 	}
 }
 
-// primaryDiskType returns the Redis counter key for the primary storage tier.
-func (uc *FileUsecase) primaryDiskType() string {
-	if uc.storageCfg.Mode == ModeS3 {
-		return "seaweedfs"
-	}
-	return "local"
-}
-
 // CheckUpload verifies instant/resumable upload and primary-storage disk availability.
-// Returns: canFastUpload, uploadedChunks, diskFull, uploadMode, error
-// uploadMode is "direct" (chunks through backend) or "presigned" (client uploads to S3/OSS directly).
-func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, string, error) {
+// Returns: canFastUpload, uploadedChunks, diskFull, uploadMode, uploadStatus, error
+// uploadMode is "direct" (chunks through backend) or "presigned" (client uploads to OSS directly).
+func (uc *FileUsecase) CheckUpload(ctx context.Context, fileMD5 string, fileSize int64, totalChunks int32) (bool, []int32, bool, string, string, error) {
 	// 1) Check instant upload by MD5 deduplication
 	store, err := uc.repo.FindStoreByMD5(ctx, fileMD5)
 	if err == nil && store != nil {
-		return true, nil, false, "direct", nil // instant-upload hit
+		return true, nil, false, "direct", store.UploadStatus, nil // instant-upload hit
 	}
 
-	// 2) Determine upload mode
-	// Mode B (s3): always presigned (data goes directly to SeaweedFS/OSS, not through backend)
-	if uc.storageCfg.Mode == ModeS3 {
-		return false, nil, false, "presigned", nil
+	// 1b) Check for in-progress upload (join cooperative upload)
+	store, err = uc.repo.FindStoreByMD5AndStatus(ctx, fileMD5, "uploading")
+	if err == nil && store != nil {
+		// Another client is uploading this file — join and return uploaded chunks
+		uploadedChunks, _ := uc.repo.GetUploadedChunks(ctx, fileMD5)
+		return false, uploadedChunks, false, "direct", "uploading", nil
 	}
 
-	// Mode A (local): check primary disk availability
-	used, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+	// 2) Check primary disk availability
+	used, _ := uc.repo.GetDiskUsage(ctx, "local")
 	if used+fileSize > uc.storageCfg.PrimaryMaxBytes {
 		// Disk full → switch to presigned OSS upload
-		return false, nil, true, "presigned", nil
+		return false, nil, true, "presigned", "", nil
 	}
 
 	// 3) Return uploaded chunks for resumable direct upload
 	uploadedChunks, err := uc.repo.GetUploadedChunks(ctx, fileMD5)
 	if err != nil {
-		return false, nil, false, "direct", err
+		return false, nil, false, "direct", "", err
 	}
-	return false, uploadedChunks, false, "direct", nil
+	return false, uploadedChunks, false, "direct", "", nil
 }
 
-// SaveChunk writes a single chunk to local temp storage
+// SaveChunk writes a single chunk to local temp storage with distributed locking
 func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex int32, chunkSize int64, chunkData []byte) error {
 	if int64(len(chunkData)) != chunkSize {
 		return errors.New("chunk size mismatch")
 	}
+
+	// Acquire chunk-level distributed lock (30s TTL)
+	acquired, err := uc.repo.AcquireChunkLock(ctx, fileMD5, chunkIndex, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("acquire chunk lock: %w", err)
+	}
+	if !acquired {
+		return ErrChunkLocked
+	}
+	defer func() {
+		_ = uc.repo.ReleaseChunkLock(ctx, fileMD5, chunkIndex)
+	}()
+
+	// Check if chunk already uploaded (idempotent skip)
+	uploaded, _ := uc.repo.IsChunkUploaded(ctx, fileMD5, chunkIndex)
+	if uploaded {
+		return nil // already uploaded by another client
+	}
+
 	if err := uc.repo.SaveChunkData(ctx, fileMD5, chunkIndex, chunkData); err != nil {
 		return err
 	}
 	// Track local disk usage counter
 	_ = uc.repo.IncrDiskUsage(ctx, "local", chunkSize)
 
-	chunk := &ChunkInfo{
-		FileMD5:    fileMD5,
-		ChunkIndex: chunkIndex,
-		ChunkSize:  chunkSize,
-		Uploaded:   true,
-	}
-	return uc.repo.SaveChunkInfo(ctx, chunk)
+	return uc.repo.AddUploadedChunk(ctx, fileMD5, chunkIndex)
 }
 
 // MergeChunks merges chunks, uploads to the appropriate storage, and cleans temp files.
 func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalChunks int32) (*File, error) {
 	// 1) Re-check deduplication to reuse existing storage
 	store, _ := uc.repo.FindStoreByMD5(ctx, fileMD5)
+	if store != nil && store.UploadStatus == "completed" {
+		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
+			return nil, err
+		}
+		file := &File{
+			UserID: userID, ParentID: parentID, Name: fileName,
+			FileMD5: fileMD5, Size: fileSize, IsFolder: false,
+			Path: store.StorePath,
+		}
+		createdFile, err := uc.repo.Create(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		_ = uc.repo.ClearChunkInfo(ctx, fileMD5)
+		if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
+			uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
+		}
+		return createdFile, nil
+	}
+
+	// 2) Acquire merge lock (distributed across instances, 2 min TTL)
+	acquired, err := uc.repo.AcquireMergeLock(ctx, fileMD5, 2*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("acquire merge lock: %w", err)
+	}
+	if !acquired {
+		return nil, ErrMergeLocked
+	}
+	defer func() {
+		_ = uc.repo.ReleaseMergeLock(ctx, fileMD5)
+	}()
+
+	// 3) Re-check dedup after acquiring lock (another instance may have completed)
+	store, _ = uc.repo.FindStoreByMD5AndStatus(ctx, fileMD5, "completed")
 	if store != nil {
 		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
 			return nil, err
@@ -345,38 +417,79 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return createdFile, nil
 	}
 
-	// 2) Merge chunks into a local file
-	mergedPath, err := uc.repo.MergeChunkData(ctx, fileMD5, fileName, totalChunks)
-	if err != nil {
-		return nil, err
-	}
-
-	// 3) Choose storage target based on mode
+	// 4) Create store with uploading status (MySQL UNIQUE constraint handles races)
 	ext := filepath.Ext(fileName)
 	if ext == "" {
 		ext = ".bin"
 	}
 	objectKey := fileMD5 + ext
+
+	createdStore, err := uc.repo.CreateStoreWithStatus(ctx, &FileStore{
+		FileMD5:      fileMD5,
+		Size:         fileSize,
+		StorePath:    objectKey,
+		StorageType:  StorageLocal,
+		UploadStatus: "uploading",
+		RefCount:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// UNIQUE constraint race: another instance may have created & completed it
+	if createdStore.UploadStatus == "completed" || createdStore.UploadStatus == "done" {
+		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
+			return nil, err
+		}
+		file := &File{
+			UserID: userID, ParentID: parentID, Name: fileName,
+			FileMD5: fileMD5, Size: fileSize, IsFolder: false,
+			Path: createdStore.StorePath,
+		}
+		createdFile, createErr := uc.repo.Create(ctx, file)
+		if createErr != nil {
+			return nil, createErr
+		}
+		_ = uc.repo.ClearChunkInfo(ctx, fileMD5)
+		if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
+			uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
+		}
+		return createdFile, nil
+	}
+
+	// 5) Verify all chunks are present locally (cross-instance failover guard)
+	uploaded, _ := uc.repo.CountUploadedChunks(ctx, fileMD5)
+	if uploaded < totalChunks {
+		return nil, fmt.Errorf("incomplete chunks: have %d of %d — retry after chunks are re-uploaded to this instance", uploaded, totalChunks)
+	}
+
+	// 6) Merge chunks into a local file
+	mergedPath, err := uc.repo.MergeChunkData(ctx, fileMD5, fileName, totalChunks)
+	if err != nil {
+		return nil, err
+	}
+
+	// 7) Choose storage target: local disk, OSS fallback if disk full
 	storageType, storePath := uc.uploadMergedFile(ctx, mergedPath, objectKey, fileSize)
 
-	// 4) Remove local merged file only if uploaded to remote storage
+	// 8) Remove local merged file only if uploaded to remote storage
 	if storageType != StorageLocal {
 		_ = os.Remove(mergedPath)
 		_ = uc.repo.IncrDiskUsage(ctx, "local", -fileSize)
 	}
 
-	// 5) Create file_stores record
-	if err := uc.repo.CreateStore(ctx, &FileStore{
-		FileMD5:     fileMD5,
-		Size:        fileSize,
-		StorePath:   storePath,
-		StorageType: storageType,
-		RefCount:    1,
-	}); err != nil {
-		return nil, err
+	// 8.5) Apply erasure coding to local files above size threshold
+	if storageType == StorageLocal {
+		localPath := filepath.Join(uc.storeDir, objectKey)
+		if uc.encodeWithErasure(ctx, localPath, fileMD5, fileSize, createdStore.ID) {
+			storageType = StorageLocalEC
+		}
 	}
 
-	// 6) Create files record
+	// 9) Update store status to completed with final storage info
+	_ = uc.repo.UpdateStorageLocation(ctx, fileMD5, storageType, storePath)
+	_ = uc.repo.UpdateStoreStatus(ctx, createdStore.ID, "completed")
+
+	// 10) Create files record
 	file := &File{
 		UserID: userID, ParentID: parentID, Name: fileName,
 		FileMD5: fileMD5, Size: fileSize, IsFolder: false,
@@ -387,7 +500,7 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return nil, err
 	}
 
-	// 7) Cleanup
+	// 11) Cleanup
 	if err := uc.repo.ClearChunkInfo(ctx, fileMD5); err != nil {
 		uc.log.Warnf("Could not clear chunk metadata for %s: %v", fileMD5, err)
 	}
@@ -395,11 +508,11 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
 	}
 
-	// 8) Check primary storage threshold and trigger LRU eviction if needed
-	primUsed, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
+	// 12) Check primary storage threshold and trigger LRU eviction if needed
+	primUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
 	uc.maybeEvictToCloud(ctx, primUsed)
 
-	// 9) Send async thumbnail task for media files
+	// 13) Send async thumbnail task for media files
 	if uc.mq != nil && isMediaFile(fileName) {
 		thumbMsg := &ThumbnailMessage{
 			FileID:   createdFile.ID,
@@ -415,32 +528,11 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 }
 
 // uploadMergedFile puts the merged file into the appropriate storage backend,
-// falling back to OSS when the primary tier is full.
+// falling back to OSS when the local disk is full.
 func (uc *FileUsecase) uploadMergedFile(ctx context.Context, mergedPath, objectKey string, fileSize int64) (storageType, storePath string) {
 	storePath = objectKey
 
-	if uc.storageCfg.Mode == ModeS3 {
-		// Mode B: SeaweedFS is primary, OSS is fallback
-		primUsed, _ := uc.repo.GetDiskUsage(ctx, "seaweedfs")
-		if primUsed+fileSize <= uc.storageCfg.PrimaryMaxBytes {
-			localFile, err := os.Open(mergedPath)
-			if err == nil {
-				defer localFile.Close()
-				if err := uc.objStore.Put(ctx, objectKey, localFile, fileSize); err == nil {
-					_ = uc.repo.IncrDiskUsage(ctx, "seaweedfs", fileSize)
-					return StorageSeaweedFS, storePath
-				} else {
-					uc.log.Warnf("SeaweedFS upload failed for %s, fallback to OSS: %v", objectKey, err)
-				}
-			} else {
-				uc.log.Warnf("Open merged file failed for %s: %v", objectKey, err)
-			}
-		}
-		// Fallback to OSS
-		return uc.uploadToOSS(ctx, mergedPath, objectKey, fileSize, storePath)
-	}
-
-	// Mode A: local disk is primary, OSS is fallback
+	// Local disk is primary, OSS is fallback
 	primUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
 	if primUsed+fileSize <= uc.storageCfg.PrimaryMaxBytes {
 		// Keep file on local disk — copy/link to storeDir if not already there
@@ -493,6 +585,78 @@ func (uc *FileUsecase) copyFile(src, dst string) {
 	if _, err := io.Copy(out, in); err != nil {
 		uc.log.Errorf("copyFile: copy %s -> %s: %v", src, dst, err)
 	}
+}
+
+// encodeWithErasure applies Reed-Solomon encoding to a locally stored file
+// and persists shard metadata. It deletes the original merged file after
+// successful encoding.
+// Returns true if encoding was performed, false otherwise.
+func (uc *FileUsecase) encodeWithErasure(ctx context.Context, mergedPath, fileMD5 string, fileSize int64, storeID int64) bool {
+	if uc.erasureEnc == nil || fileSize < uc.erasureCfg.MinFileSize {
+		return false
+	}
+
+	shardPaths, err := uc.erasureEnc.Encode(mergedPath, uc.storeDir, fileMD5, uc.erasureCfg.DataShards, uc.erasureCfg.ParityShards)
+	if err != nil {
+		uc.log.Warnf("erasure encode failed for %s, keeping original: %v", fileMD5, err)
+		return false
+	}
+
+	total := uc.erasureCfg.DataShards + uc.erasureCfg.ParityShards
+	for i, sp := range shardPaths {
+		checksum, _ := uc.erasureEnc.ShardChecksum(sp)
+		info, _ := os.Stat(sp)
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+		shard := &ErasureShard{
+			FileStoreID: storeID,
+			ShardIndex:  int32(i),
+			ShardPath:   filepath.Base(sp),
+			ShardSize:   size,
+			IsParity:    i >= uc.erasureCfg.DataShards,
+			Checksum:    checksum,
+		}
+		if err := uc.repo.CreateErasureShard(ctx, shard); err != nil {
+			uc.log.Errorf("failed to save erasure shard %d for %s: %v", i, fileMD5, err)
+			// Clean up shard files on partial failure
+			for _, p := range shardPaths {
+				_ = os.Remove(p)
+			}
+			return false
+		}
+		_ = i
+		_ = total
+	}
+
+	// Remove original merged file — data is now in shards
+	_ = os.Remove(mergedPath)
+	return true
+}
+
+// reconstructFromShards reads erasure shards from disk and reconstructs the
+// original file data. Returns an io.ReadCloser over the reconstructed bytes.
+func (uc *FileUsecase) reconstructFromShards(ctx context.Context, fileStoreID int64) (io.ReadCloser, int64, error) {
+	shards, err := uc.repo.FindErasureShards(ctx, fileStoreID)
+	if err != nil || len(shards) == 0 {
+		return nil, 0, fmt.Errorf("no erasure shards found for store %d", fileStoreID)
+	}
+
+	total := int32(uc.erasureCfg.DataShards + uc.erasureCfg.ParityShards)
+	paths := make([]string, total)
+	for _, s := range shards {
+		if s.ShardIndex < total {
+			paths[s.ShardIndex] = filepath.Join(uc.storeDir, s.ShardPath)
+		}
+	}
+
+	data, err := uc.erasureEnc.Reconstruct(paths, uc.erasureCfg.DataShards, uc.erasureCfg.ParityShards)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reconstruct store %d: %w", fileStoreID, err)
+	}
+
+	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -574,8 +738,8 @@ func (uc *FileUsecase) InitPresignedUpload(ctx context.Context, userID, parentID
 		_ = uc.repo.DeleteUploadSession(ctx, session.ID)
 	}
 
-	// 3) New session: choose storage target
-	storageTarget := uc.choosePresignedTarget(ctx, fileSize)
+	// 3) New session: presigned always goes to OSS
+	storageTarget := StorageOSS
 
 	ext := filepath.Ext(fileName)
 	if ext == "" {
@@ -583,14 +747,8 @@ func (uc *FileUsecase) InitPresignedUpload(ctx context.Context, userID, parentID
 	}
 	objectKey := fileMD5 + ext
 
-	// Init S3 multipart upload
-	var s3UploadID string
-	var initErr error
-	if storageTarget == StorageSeaweedFS {
-		s3UploadID, initErr = uc.objStore.InitMultipartUpload(ctx, objectKey)
-	} else {
-		s3UploadID, initErr = uc.cloudStore.InitMultipartUpload(ctx, objectKey)
-	}
+	// Init S3 multipart upload on OSS
+	s3UploadID, initErr := uc.cloudStore.InitMultipartUpload(ctx, objectKey)
 	if initErr != nil {
 		return nil, fmt.Errorf("init multipart upload: %w", initErr)
 	}
@@ -673,23 +831,19 @@ func (uc *FileUsecase) CompletePresignedUpload(ctx context.Context, userID int64
 		s3Parts[i] = CompletedPart{PartNumber: p.PartNumber, ETag: p.ETag}
 	}
 
-	// Complete multipart upload on the storage backend
-	if session.StorageTarget == StorageSeaweedFS {
-		err = uc.objStore.CompleteMultipartUpload(ctx, session.ObjectKey, session.S3UploadID, s3Parts)
-	} else {
-		err = uc.cloudStore.CompleteMultipartUpload(ctx, session.ObjectKey, session.S3UploadID, s3Parts)
-	}
-	if err != nil {
+	// Complete multipart upload on OSS
+	if err := uc.cloudStore.CompleteMultipartUpload(ctx, session.ObjectKey, session.S3UploadID, s3Parts); err != nil {
 		return nil, fmt.Errorf("complete multipart upload: %w", err)
 	}
 
 	// Create file_stores record
 	if createErr := uc.repo.CreateStore(ctx, &FileStore{
-		FileMD5:     session.FileMD5,
-		Size:        session.FileSize,
-		StorePath:   session.ObjectKey,
-		StorageType: session.StorageTarget,
-		RefCount:    1,
+		FileMD5:      session.FileMD5,
+		Size:         session.FileSize,
+		StorePath:    session.ObjectKey,
+		StorageType:  StorageOSS,
+		UploadStatus: "completed",
+		RefCount:     1,
 	}); createErr != nil {
 		return nil, createErr
 	}
@@ -713,13 +867,6 @@ func (uc *FileUsecase) CompletePresignedUpload(ctx context.Context, userID int64
 		uc.log.Warnf("Could not update storage usage for user %d: %v", session.UserID, err)
 	}
 
-	// Update disk usage counter
-	_ = uc.repo.IncrDiskUsage(ctx, session.StorageTarget, session.FileSize)
-
-	// Check eviction threshold
-	primUsed, _ := uc.repo.GetDiskUsage(ctx, uc.primaryDiskType())
-	uc.maybeEvictToCloud(ctx, primUsed)
-
 	return createdFile, nil
 }
 
@@ -740,20 +887,6 @@ func (uc *FileUsecase) AbortPresignedUpload(ctx context.Context, userID int64, s
 	return nil
 }
 
-// choosePresignedTarget decides which storage backend to use for presigned uploads.
-func (uc *FileUsecase) choosePresignedTarget(ctx context.Context, fileSize int64) string {
-	if uc.storageCfg.Mode == ModeS3 {
-		// Mode B: SeaweedFS is primary, fallback to OSS if full
-		used, _ := uc.repo.GetDiskUsage(ctx, "seaweedfs")
-		if used+fileSize <= uc.storageCfg.PrimaryMaxBytes {
-			return StorageSeaweedFS
-		}
-		return StorageOSS
-	}
-	// Mode A: local disk is primary, presigned goes to OSS
-	return StorageOSS
-}
-
 // generatePresignedURLs creates presigned upload URLs for parts not in completedSet.
 func (uc *FileUsecase) generatePresignedURLs(ctx context.Context, session *UploadSession, completedSet map[int32]bool) ([]PresignedPart, error) {
 	var pending []PresignedPart
@@ -761,13 +894,7 @@ func (uc *FileUsecase) generatePresignedURLs(ctx context.Context, session *Uploa
 		if completedSet[i] {
 			continue
 		}
-		var url string
-		var err error
-		if session.StorageTarget == StorageSeaweedFS {
-			url, err = uc.objStore.PresignUploadPart(ctx, session.ObjectKey, session.S3UploadID, i, presignedURLExpiry)
-		} else {
-			url, err = uc.cloudStore.PresignUploadPart(ctx, session.ObjectKey, session.S3UploadID, i, presignedURLExpiry)
-		}
+		url, err := uc.cloudStore.PresignUploadPart(ctx, session.ObjectKey, session.S3UploadID, i, presignedURLExpiry)
 		if err != nil {
 			return nil, fmt.Errorf("presign part %d: %w", i, err)
 		}
@@ -776,15 +903,9 @@ func (uc *FileUsecase) generatePresignedURLs(ctx context.Context, session *Uploa
 	return pending, nil
 }
 
-// abortS3Upload calls abort on the storage backend, logging errors.
+// abortS3Upload calls abort on OSS, logging errors.
 func (uc *FileUsecase) abortS3Upload(ctx context.Context, session *UploadSession) {
-	var err error
-	if session.StorageTarget == StorageSeaweedFS {
-		err = uc.objStore.AbortMultipartUpload(ctx, session.ObjectKey, session.S3UploadID)
-	} else {
-		err = uc.cloudStore.AbortMultipartUpload(ctx, session.ObjectKey, session.S3UploadID)
-	}
-	if err != nil {
+	if err := uc.cloudStore.AbortMultipartUpload(ctx, session.ObjectKey, session.S3UploadID); err != nil {
 		uc.log.Warnf("Failed to abort multipart upload %s: %v", session.S3UploadID, err)
 	}
 }
@@ -810,13 +931,7 @@ func (uc *FileUsecase) maybeEvictToCloud(ctx context.Context, currentUsed int64)
 	target := threshold * int64(evictPct) / 100
 	toFree := currentUsed - target
 
-	// Determine which storage type holds the primary files
-	primaryType := StorageLocal
-	if uc.storageCfg.Mode == ModeS3 {
-		primaryType = StorageSeaweedFS
-	}
-
-	stores, err := uc.repo.FindLRUStores(ctx, primaryType, 100)
+	stores, err := uc.repo.FindLRUStores(ctx, StorageLocal, 100)
 	if err != nil {
 		uc.log.Warnf("Could not load LRU candidates for eviction: %v", err)
 		return
@@ -847,9 +962,8 @@ func (uc *FileUsecase) maybeEvictToCloud(ctx context.Context, currentUsed int64)
 
 // GetDiskUsage returns current usage of primary storage and its capacity.
 func (uc *FileUsecase) GetDiskUsage(ctx context.Context) (primaryUsed, primaryMax int64, primaryType string, err error) {
-	pType := uc.primaryDiskType()
-	primaryUsed, _ = uc.repo.GetDiskUsage(ctx, pType)
-	return primaryUsed, uc.storageCfg.PrimaryMaxBytes, pType, nil
+	primaryUsed, _ = uc.repo.GetDiskUsage(ctx, "local")
+	return primaryUsed, uc.storageCfg.PrimaryMaxBytes, "local", nil
 }
 
 func (uc *FileUsecase) ListFiles(ctx context.Context, userID, parentID int64, page, pageSize int32) ([]*File, int64, error) {
@@ -946,12 +1060,12 @@ func (uc *FileUsecase) GetDownloadURL(ctx context.Context, userID, fileID int64)
 
 	var downloadURL string
 	switch store.StorageType {
-	case StorageLocal:
+	case StorageLocal, StorageLocalEC:
 		downloadURL = "local://" + store.StorePath
 	case StorageOSS:
 		downloadURL, err = uc.cloudStore.PresignGetURL(ctx, store.StorePath, time.Hour)
-	default: // seaweedfs
-		downloadURL, err = uc.objStore.PresignGetURL(ctx, store.StorePath, time.Hour)
+	default:
+		return "", "", fmt.Errorf("unsupported storage type: %s", store.StorageType)
 	}
 	if err != nil {
 		return "", "", err
@@ -1003,12 +1117,20 @@ func (uc *FileUsecase) OpenLocalFile(ctx context.Context, userID, fileID int64) 
 		return nil, "", 0, "", ErrFileNotFound
 	}
 
-	if store.StorageType != StorageLocal {
+	if store.StorageType != StorageLocal && store.StorageType != StorageLocalEC {
 		return nil, "", 0, "", errors.New("file is not stored locally")
 	}
 
 	// Refresh LRU ordering
 	_ = uc.repo.UpdateLastAccessed(ctx, file.FileMD5)
+
+	if store.StorageType == StorageLocalEC {
+		rc, size, err := uc.reconstructFromShards(ctx, store.ID)
+		if err != nil {
+			return nil, "", 0, "", err
+		}
+		return rc, file.Name, size, detectMIME(file.Name), nil
+	}
 
 	localPath := filepath.Join(uc.storeDir, store.StorePath)
 	f, err := os.Open(localPath)

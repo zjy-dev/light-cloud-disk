@@ -12,95 +12,6 @@ github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/transport
 # github.com/armon/go-metrics v0.4.1
 ## explicit; go 1.12
 github.com/armon/go-metrics
-# github.com/aws/aws-sdk-go-v2 v1.41.3
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/aws
-github.com/aws/aws-sdk-go-v2/aws/arn
-github.com/aws/aws-sdk-go-v2/aws/defaults
-github.com/aws/aws-sdk-go-v2/aws/middleware
-github.com/aws/aws-sdk-go-v2/aws/protocol/xml
-github.com/aws/aws-sdk-go-v2/aws/ratelimit
-github.com/aws/aws-sdk-go-v2/aws/retry
-github.com/aws/aws-sdk-go-v2/aws/signer/internal/v4
-github.com/aws/aws-sdk-go-v2/aws/signer/v4
-github.com/aws/aws-sdk-go-v2/aws/transport/http
-github.com/aws/aws-sdk-go-v2/internal/auth
-github.com/aws/aws-sdk-go-v2/internal/auth/smithy
-github.com/aws/aws-sdk-go-v2/internal/context
-github.com/aws/aws-sdk-go-v2/internal/endpoints
-github.com/aws/aws-sdk-go-v2/internal/endpoints/awsrulesfn
-github.com/aws/aws-sdk-go-v2/internal/middleware
-github.com/aws/aws-sdk-go-v2/internal/rand
-github.com/aws/aws-sdk-go-v2/internal/sdk
-github.com/aws/aws-sdk-go-v2/internal/strings
-github.com/aws/aws-sdk-go-v2/internal/sync/singleflight
-github.com/aws/aws-sdk-go-v2/internal/timeconv
-# github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.6
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
-github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi
-# github.com/aws/aws-sdk-go-v2/credentials v1.19.11
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/credentials
-# github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.19
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/internal/configsources
-# github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.19
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
-# github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.19
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/internal/v4a
-github.com/aws/aws-sdk-go-v2/internal/v4a/internal/crypto
-github.com/aws/aws-sdk-go-v2/internal/v4a/internal/v4
-# github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.6
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding
-# github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.11
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/service/internal/checksum
-# github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.19
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
-# github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.19
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/service/internal/s3shared
-github.com/aws/aws-sdk-go-v2/service/internal/s3shared/arn
-github.com/aws/aws-sdk-go-v2/service/internal/s3shared/config
-# github.com/aws/aws-sdk-go-v2/service/s3 v1.96.3
-## explicit; go 1.24
-github.com/aws/aws-sdk-go-v2/service/s3
-github.com/aws/aws-sdk-go-v2/service/s3/internal/arn
-github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations
-github.com/aws/aws-sdk-go-v2/service/s3/internal/endpoints
-github.com/aws/aws-sdk-go-v2/service/s3/types
-# github.com/aws/smithy-go v1.24.2
-## explicit; go 1.24
-github.com/aws/smithy-go
-github.com/aws/smithy-go/auth
-github.com/aws/smithy-go/auth/bearer
-github.com/aws/smithy-go/container/private/cache
-github.com/aws/smithy-go/container/private/cache/lru
-github.com/aws/smithy-go/context
-github.com/aws/smithy-go/document
-github.com/aws/smithy-go/encoding
-github.com/aws/smithy-go/encoding/httpbinding
-github.com/aws/smithy-go/encoding/xml
-github.com/aws/smithy-go/endpoints
-github.com/aws/smithy-go/endpoints/private/rulesfn
-github.com/aws/smithy-go/internal/sync/singleflight
-github.com/aws/smithy-go/io
-github.com/aws/smithy-go/logging
-github.com/aws/smithy-go/metrics
-github.com/aws/smithy-go/middleware
-github.com/aws/smithy-go/ptr
-github.com/aws/smithy-go/rand
-github.com/aws/smithy-go/sync
-github.com/aws/smithy-go/time
-github.com/aws/smithy-go/tracing
-github.com/aws/smithy-go/transport/http
-github.com/aws/smithy-go/transport/http/internal/io
-github.com/aws/smithy-go/waiter
 # github.com/bytedance/gopkg v0.1.3
 ## explicit; go 1.18
 github.com/bytedance/gopkg/lang/dirtmake
@@ -331,23 +242,12 @@ github.com/joho/godotenv
 # github.com/json-iterator/go v1.1.12
 ## explicit; go 1.12
 github.com/json-iterator/go
-# github.com/klauspost/compress v1.17.6
-## explicit; go 1.19
-github.com/klauspost/compress
-github.com/klauspost/compress/flate
-github.com/klauspost/compress/fse
-github.com/klauspost/compress/gzip
-github.com/klauspost/compress/huff0
-github.com/klauspost/compress/internal/cpuinfo
-github.com/klauspost/compress/internal/race
-github.com/klauspost/compress/internal/snapref
-github.com/klauspost/compress/s2
-github.com/klauspost/compress/snappy
-github.com/klauspost/compress/zstd
-github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/klauspost/cpuid/v2 v2.3.0
 ## explicit; go 1.22
 github.com/klauspost/cpuid/v2
+# github.com/klauspost/reedsolomon v1.13.3
+## explicit; go 1.24
+github.com/klauspost/reedsolomon
 # github.com/leodido/go-urn v1.4.0
 ## explicit; go 1.18
 github.com/leodido/go-urn
@@ -377,13 +277,6 @@ github.com/pelletier/go-toml/v2/internal/characters
 github.com/pelletier/go-toml/v2/internal/danger
 github.com/pelletier/go-toml/v2/internal/tracker
 github.com/pelletier/go-toml/v2/unstable
-# github.com/pierrec/lz4/v4 v4.1.15
-## explicit; go 1.14
-github.com/pierrec/lz4/v4
-github.com/pierrec/lz4/v4/internal/lz4block
-github.com/pierrec/lz4/v4/internal/lz4errors
-github.com/pierrec/lz4/v4/internal/lz4stream
-github.com/pierrec/lz4/v4/internal/xxh32
 # github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 ## explicit
 github.com/pmezard/go-difflib/difflib
@@ -410,57 +303,6 @@ github.com/quic-go/quic-go/qlog
 github.com/quic-go/quic-go/qlogwriter
 github.com/quic-go/quic-go/qlogwriter/jsontext
 github.com/quic-go/quic-go/quicvarint
-# github.com/segmentio/kafka-go v0.4.50
-## explicit; go 1.23
-github.com/segmentio/kafka-go
-github.com/segmentio/kafka-go/compress
-github.com/segmentio/kafka-go/compress/gzip
-github.com/segmentio/kafka-go/compress/lz4
-github.com/segmentio/kafka-go/compress/snappy
-github.com/segmentio/kafka-go/compress/zstd
-github.com/segmentio/kafka-go/protocol
-github.com/segmentio/kafka-go/protocol/addoffsetstotxn
-github.com/segmentio/kafka-go/protocol/addpartitionstotxn
-github.com/segmentio/kafka-go/protocol/alterclientquotas
-github.com/segmentio/kafka-go/protocol/alterconfigs
-github.com/segmentio/kafka-go/protocol/alterpartitionreassignments
-github.com/segmentio/kafka-go/protocol/alteruserscramcredentials
-github.com/segmentio/kafka-go/protocol/apiversions
-github.com/segmentio/kafka-go/protocol/consumer
-github.com/segmentio/kafka-go/protocol/createacls
-github.com/segmentio/kafka-go/protocol/createpartitions
-github.com/segmentio/kafka-go/protocol/createtopics
-github.com/segmentio/kafka-go/protocol/deleteacls
-github.com/segmentio/kafka-go/protocol/deletegroups
-github.com/segmentio/kafka-go/protocol/deletetopics
-github.com/segmentio/kafka-go/protocol/describeacls
-github.com/segmentio/kafka-go/protocol/describeclientquotas
-github.com/segmentio/kafka-go/protocol/describeconfigs
-github.com/segmentio/kafka-go/protocol/describegroups
-github.com/segmentio/kafka-go/protocol/describeuserscramcredentials
-github.com/segmentio/kafka-go/protocol/electleaders
-github.com/segmentio/kafka-go/protocol/endtxn
-github.com/segmentio/kafka-go/protocol/fetch
-github.com/segmentio/kafka-go/protocol/findcoordinator
-github.com/segmentio/kafka-go/protocol/heartbeat
-github.com/segmentio/kafka-go/protocol/incrementalalterconfigs
-github.com/segmentio/kafka-go/protocol/initproducerid
-github.com/segmentio/kafka-go/protocol/joingroup
-github.com/segmentio/kafka-go/protocol/leavegroup
-github.com/segmentio/kafka-go/protocol/listgroups
-github.com/segmentio/kafka-go/protocol/listoffsets
-github.com/segmentio/kafka-go/protocol/listpartitionreassignments
-github.com/segmentio/kafka-go/protocol/metadata
-github.com/segmentio/kafka-go/protocol/offsetcommit
-github.com/segmentio/kafka-go/protocol/offsetdelete
-github.com/segmentio/kafka-go/protocol/offsetfetch
-github.com/segmentio/kafka-go/protocol/produce
-github.com/segmentio/kafka-go/protocol/rawproduce
-github.com/segmentio/kafka-go/protocol/saslauthenticate
-github.com/segmentio/kafka-go/protocol/saslhandshake
-github.com/segmentio/kafka-go/protocol/syncgroup
-github.com/segmentio/kafka-go/protocol/txnoffsetcommit
-github.com/segmentio/kafka-go/sasl
 # github.com/stretchr/objx v0.5.2
 ## explicit; go 1.20
 github.com/stretchr/objx

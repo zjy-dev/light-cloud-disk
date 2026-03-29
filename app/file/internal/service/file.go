@@ -26,7 +26,7 @@ func NewFileService(uc *biz.FileUsecase, logger log.Logger) *FileService {
 }
 
 func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadRequest) (*pb.CheckUploadReply, error) {
-	canFastUpload, uploadedChunks, diskFull, uploadMode, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
+	canFastUpload, uploadedChunks, diskFull, uploadMode, uploadStatus, err := s.uc.CheckUpload(ctx, req.FileMd5, req.FileSize, req.TotalChunks)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +35,7 @@ func (s *FileService) CheckUpload(ctx context.Context, req *pb.CheckUploadReques
 		UploadedChunks: uploadedChunks,
 		DiskFull:       diskFull,
 		UploadMode:     uploadMode,
+		UploadStatus:   uploadStatus,
 	}, nil
 }
 
