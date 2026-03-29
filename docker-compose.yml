@@ -2,7 +2,7 @@
 #
 # Usage: podman-compose --env-file .env up -d
 #
-# Single-mode: local disk + Redis + Consul + MySQL (or SQLite via DB_DRIVER)
+# Single-mode: local disk + Redis + Consul + MySQL + Kafka (or SQLite via DB_DRIVER)
 
 services:
   consul:
@@ -76,6 +76,43 @@ services:
     networks:
       - cloud-disk
 
+  kafka:
+    image: docker.io/apache/kafka:3.9
+    container_name: cloud-disk-kafka
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
+      NO_PROXY: "*"
+      no_proxy: "*"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092 || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - cloud-disk
+
   user-service:
     build:
       context: .
@@ -141,6 +178,9 @@ services:
       ERASURE_DATA_SHARDS: ${ERASURE_DATA_SHARDS:-4}
       ERASURE_PARITY_SHARDS: ${ERASURE_PARITY_SHARDS:-2}
       ERASURE_MIN_FILE_SIZE: ${ERASURE_MIN_FILE_SIZE:-1048576}
+      KAFKA_BROKERS: kafka:9092
+      FILE_HTTP_ADDR: ":9003"
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret}
       FILE_TMP_DIR: /app/tmp
       FILE_STORE_DIR: /app/store
       NO_PROXY: "*"
@@ -151,6 +191,7 @@ services:
       https_proxy: ""
     ports:
       - "9002:9002"
+      - "9003:9003"
     volumes:
       - file_tmp:/app/tmp
       - file_store:/app/store
@@ -164,6 +205,8 @@ services:
         condition: service_healthy
       user-service:
         condition: service_started
+      kafka:
+        condition: service_healthy
     networks:
       - cloud-disk
 
@@ -223,6 +266,7 @@ volumes:
   consul_data:
   mysql_data:
   redis_data:
+  kafka_data:
   file_tmp:
   file_store:
   file_data:

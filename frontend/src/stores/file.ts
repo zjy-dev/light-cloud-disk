@@ -115,23 +115,74 @@ export const useFileStore = defineStore('file', () => {
     await fetchFiles()
   }
 
-  async function downloadFile(fileId: number) {
-    const { data } = await fileApi.getDownloadURL(fileId)
-    const url = data.downloadUrl
+  async function fetchChunkWithFallback(chunk: { chunkIndex: number; downloadUrl: string; backupUrls?: string[] }, token: string) {
+    const urls = [chunk.downloadUrl, ...(chunk.backupUrls ?? [])]
+    let lastError: Error | undefined
 
-    // Relative URLs (local-mode stream) require auth header, so fetch as blob
-    if (url.startsWith('/')) {
-      const { data: blob } = await fileApi.downloadBlob(url)
-      const blobUrl = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = blobUrl
-      a.download = data.fileName || 'download'
-      a.click()
-      URL.revokeObjectURL(blobUrl)
-    } else {
-      // External presigned URL (S3 / OSS) - open directly
-      window.open(url, '_blank')
+    for (const url of urls) {
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (resp.ok) {
+        return resp.arrayBuffer()
+      }
+      lastError = new Error(`Chunk ${chunk.chunkIndex} download failed: ${resp.status}`)
     }
+
+    throw lastError ?? new Error(`Chunk ${chunk.chunkIndex} download failed`)
+  }
+
+  async function downloadFile(fileId: number) {
+    const { data: plan } = await fileApi.getDownloadPlan(fileId)
+
+    if (plan.totalChunks === 1 && plan.chunks.length === 1) {
+      const chunk = plan.chunks[0]
+      const url = chunk.downloadUrl
+      const isDirectChunkURL = url.includes('/api/v1/chunks/')
+      if ((url.startsWith('http://') || url.startsWith('https://')) && !isDirectChunkURL && !(chunk.backupUrls?.length)) {
+        window.open(url, '_blank')
+      } else {
+        const token = localStorage.getItem('token') ?? ''
+        const buffer = await fetchChunkWithFallback(chunk, token)
+        const blob = new Blob([buffer], { type: 'application/octet-stream' })
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = plan.fileName || 'download'
+        a.click()
+        URL.revokeObjectURL(blobUrl)
+      }
+      return
+    }
+
+    // Multi-chunk scattered file: parallel download + reassemble
+    const token = localStorage.getItem('token') ?? ''
+    const chunks = plan.chunks.sort((a, b) => a.chunkIndex - b.chunkIndex)
+    const buffers: ArrayBuffer[] = new Array(plan.totalChunks)
+    const inflight: Promise<void>[] = []
+
+    async function fetchOne(chunk: { chunkIndex: number; downloadUrl: string; backupUrls?: string[] }) {
+      buffers[chunk.chunkIndex] = await fetchChunkWithFallback(chunk, token)
+    }
+
+    for (const chunk of chunks) {
+      const p = fetchOne(chunk).then(() => {
+        inflight.splice(inflight.indexOf(p), 1)
+      })
+      inflight.push(p)
+      if (inflight.length >= 4) {
+        await Promise.race(inflight)
+      }
+    }
+    await Promise.all(inflight)
+
+    const blob = new Blob(buffers, { type: 'application/octet-stream' })
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = plan.fileName || 'download'
+    a.click()
+    URL.revokeObjectURL(blobUrl)
   }
 
   function toggleSelect(id: number) {

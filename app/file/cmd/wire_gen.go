@@ -13,30 +13,29 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/data"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/server"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/service"
-	"github.com/go-kratos/kratos/contrib/registry/consul/v2"
-	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/log"
+	kratosgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 )
 
 // Injectors from wire.go:
 
-func wireApp(confServer *conf.Server, confData *conf.Data, upload *conf.Upload, storage *conf.Storage, logger log.Logger, registry *consul.Registry, userServiceClient v1.UserServiceClient) (*kratos.App, func(), error) {
+func wireApp(confServer *conf.Server, confData *conf.Data, upload *conf.Upload, storage *conf.Storage, logger log.Logger, userServiceClient v1.UserServiceClient) (*kratosgrpc.Server, *biz.FileUsecase, func(), error) {
 	dataData, cleanup, err := data.NewData(confData, logger)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	fileRepo := data.NewFileRepo(dataData, logger)
 	userClient := data.NewUserClient(userServiceClient, logger)
 	cloudStorage, err := data.NewOSSClient(storage, logger)
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	string2 := provideStoreDir(upload)
 	messageProducer, cleanup2, err := data.NewMessageProducer(fileRepo, cloudStorage, string2, logger)
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	storageConfig := provideStorageConfig(storage)
 	erasureConfig := provideErasureConfig()
@@ -44,8 +43,7 @@ func wireApp(confServer *conf.Server, confData *conf.Data, upload *conf.Upload, 
 	fileUsecase := biz.NewFileUsecase(fileRepo, userClient, messageProducer, cloudStorage, storageConfig, erasureConfig, erasureEncoder, string2, logger)
 	fileService := service.NewFileService(fileUsecase, logger)
 	grpcServer := server.NewGRPCServer(confServer, fileService, logger)
-	app := newApp(logger, grpcServer, registry)
-	return app, func() {
+	return grpcServer, fileUsecase, func() {
 		cleanup2()
 		cleanup()
 	}, nil

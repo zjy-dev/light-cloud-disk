@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -17,6 +18,25 @@ import (
 type FileHandler struct {
 	clients *client.ServiceClients
 }
+
+type downloadPlanChunkResponse struct {
+	ChunkIndex  int32    `json:"chunkIndex"`
+	ChunkSize   int64    `json:"chunkSize"`
+	DownloadURL string   `json:"downloadUrl"`
+	Checksum    string   `json:"checksum"`
+	BackupURLs  []string `json:"backupUrls,omitempty"`
+}
+
+type downloadPlanResponse struct {
+	FileName          string                      `json:"fileName"`
+	FileMD5           string                      `json:"fileMd5"`
+	FileSize          int64                       `json:"fileSize"`
+	TotalChunks       int32                       `json:"totalChunks"`
+	Chunks            []downloadPlanChunkResponse `json:"chunks"`
+	DirectDownloadURL string                      `json:"directDownloadUrl,omitempty"`
+}
+
+var recoveryProxyHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func NewFileHandler(clients *client.ServiceClients) *FileHandler {
 	return &FileHandler{clients: clients}
@@ -36,7 +56,28 @@ func (h *FileHandler) CheckUpload(c *gin.Context) {
 		return
 	}
 
-	// No longer return 503 on disk_full — let the frontend decide based on upload_mode.
+	// For direct upload mode, build an upload plan with per-chunk instance assignments.
+	if reply.UploadMode == "direct" && !reply.CanFastUpload {
+		addrs := h.clients.PickNFileHTTPAddrs(req.FileMd5, int(req.TotalChunks))
+		if len(addrs) > 0 {
+			assignments := make([]*filev1.ChunkAssignment, req.TotalChunks)
+			for i := int32(0); i < req.TotalChunks; i++ {
+				addr := addrs[int(i)%len(addrs)]
+				assignments[i] = &filev1.ChunkAssignment{
+					ChunkIndex: i,
+					TargetAddr: addr,
+					UploadUrl:  fmt.Sprintf("http://%s/api/v1/chunks/%s/%d", addr, req.FileMd5, i),
+				}
+			}
+			chunkSize := req.FileSize / int64(req.TotalChunks)
+			reply.UploadPlan = &filev1.UploadPlan{
+				TotalChunks: req.TotalChunks,
+				ChunkSize:   chunkSize,
+				Assignments: assignments,
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, reply)
 }
 
@@ -115,58 +156,18 @@ func (h *FileHandler) AbortPresignedUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, reply)
 }
 
-func (h *FileHandler) UploadChunk(c *gin.Context) {
-	fileMD5 := c.PostForm("file_md5")
-	if fileMD5 == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file_md5 is required"})
+func (h *FileHandler) CompleteUpload(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	var req filev1.CompleteUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	req.UserId = userID
 
-	chunkIndex, err := strconv.ParseInt(c.PostForm("chunk_index"), 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_index"})
-		return
-	}
-
-	fileHeader, err := c.FormFile("chunk_file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "chunk_file is required"})
-		return
-	}
-
-	file, err := fileHeader.Open()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read chunk_file"})
-		return
-	}
-	defer file.Close()
-
-	chunkData, err := io.ReadAll(file)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read chunk_file data"})
-		return
-	}
-
-	var chunkSize int64
-	if chunkSizeStr := c.PostForm("chunk_size"); chunkSizeStr != "" {
-		chunkSize, err = strconv.ParseInt(chunkSizeStr, 10, 32)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk_size"})
-			return
-		}
-	} else {
-		chunkSize = int64(len(chunkData))
-	}
-
-	req := &filev1.UploadChunkRequest{
-		FileMd5:    fileMD5,
-		ChunkIndex: int32(chunkIndex),
-		ChunkSize:  int32(chunkSize),
-		ChunkData:  chunkData,
-	}
-
-	// Route by file MD5 for consistent chunk placement.
-	reply, err := h.clients.FileClientByKey(fileMD5).UploadChunk(c.Request.Context(), req)
+	// Any file-service instance can complete — they share DB/Redis state.
+	reply, err := h.clients.File.CompleteUpload(c.Request.Context(), &req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -175,24 +176,110 @@ func (h *FileHandler) UploadChunk(c *gin.Context) {
 	c.JSON(http.StatusOK, reply)
 }
 
-func (h *FileHandler) MergeChunks(c *gin.Context) {
+func (h *FileHandler) GetDownloadPlan(c *gin.Context) {
 	userID := c.GetInt64("user_id")
-
-	var req filev1.MergeChunksRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	fileID, err := strconv.ParseInt(c.Param("file_id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file_id"})
 		return
 	}
-	req.UserId = userID
 
-	// Route by file MD5 so merge hits the same instance that received the chunks.
-	reply, err := h.clients.FileClientByKey(req.FileMd5).MergeChunks(c.Request.Context(), &req)
+	reply, err := h.clients.File.GetDownloadPlan(c.Request.Context(), &filev1.GetDownloadPlanRequest{
+		UserId: userID,
+		FileId: fileID,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, reply)
+	chunks := make([]downloadPlanChunkResponse, len(reply.Chunks))
+	for i, chunk := range reply.Chunks {
+		backupURLs := []string(nil)
+		if strings.Contains(chunk.DownloadUrl, "/api/v1/chunks/") {
+			backupURLs = []string{fmt.Sprintf("/api/v1/file/chunks/%s/%d/recovery?file_size=%d", reply.FileMd5, chunk.ChunkIndex, reply.FileSize)}
+		}
+		chunks[i] = downloadPlanChunkResponse{
+			ChunkIndex:  chunk.ChunkIndex,
+			ChunkSize:   chunk.ChunkSize,
+			DownloadURL: chunk.DownloadUrl,
+			Checksum:    chunk.Checksum,
+			BackupURLs:  backupURLs,
+		}
+	}
+
+	c.JSON(http.StatusOK, downloadPlanResponse{
+		FileName:          reply.FileName,
+		FileMD5:           reply.FileMd5,
+		FileSize:          reply.FileSize,
+		TotalChunks:       reply.TotalChunks,
+		Chunks:            chunks,
+		DirectDownloadURL: reply.DirectDownloadUrl,
+	})
+}
+
+func (h *FileHandler) RecoverChunk(c *gin.Context) {
+	fileMD5 := c.Param("md5")
+	chunkIndex, err := strconv.ParseInt(c.Param("index"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chunk index"})
+		return
+	}
+
+	fileSize, err := strconv.ParseInt(c.Query("file_size"), 10, 64)
+	if err != nil || fileSize <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file_size"})
+		return
+	}
+
+	addrs := h.clients.PickNFileHTTPAddrs(fmt.Sprintf("%s:%d:recovery", fileMD5, chunkIndex), 3)
+	if len(addrs) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no healthy file-service instances available for recovery"})
+		return
+	}
+
+	authHeader := c.GetHeader("Authorization")
+	lastErr := "chunk recovery failed"
+	for _, addr := range addrs {
+		target := fmt.Sprintf("http://%s/api/v1/chunks/recover/%s/%d?file_size=%d", addr, fileMD5, chunkIndex, fileSize)
+		req, reqErr := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target, nil)
+		if reqErr != nil {
+			lastErr = reqErr.Error()
+			continue
+		}
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+
+		resp, doErr := recoveryProxyHTTPClient.Do(req)
+		if doErr != nil {
+			h.clients.MarkFileInstanceUnhealthy(addr)
+			lastErr = doErr.Error()
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if resp.StatusCode >= http.StatusInternalServerError {
+				h.clients.MarkFileInstanceUnhealthy(addr)
+			}
+			if msg := strings.TrimSpace(string(body)); msg != "" {
+				lastErr = msg
+			}
+			continue
+		}
+
+		defer resp.Body.Close()
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		c.DataFromReader(http.StatusOK, resp.ContentLength, contentType, resp.Body, nil)
+		return
+	}
+
+	c.JSON(http.StatusBadGateway, gin.H{"error": lastErr})
 }
 
 func (h *FileHandler) ListFiles(c *gin.Context) {

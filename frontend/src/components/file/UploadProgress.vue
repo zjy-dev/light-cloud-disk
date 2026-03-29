@@ -18,7 +18,7 @@ function statusLabel(status: string) {
     pending: 'Waiting',
     hashing: 'Computing hash...',
     uploading: 'Uploading',
-    merging: 'Finalizing...',
+    completing: 'Finalizing...',
     done: 'Complete',
     error: 'Failed',
   }
@@ -67,13 +67,13 @@ function statusLabel(status: string) {
             <div class="text-xs text-text-primary truncate">{{ task.fileName }}</div>
             <div class="text-[10px] text-text-tertiary">
               {{ statusLabel(task.status) }}
-              <span v-if="task.status === 'uploading' || task.status === 'merging'">
+              <span v-if="task.status === 'uploading' || task.status === 'completing'">
                 {{ task.progress }}%
               </span>
             </div>
             <!-- Progress bar -->
             <div
-              v-if="task.status === 'uploading' || task.status === 'merging' || task.status === 'hashing'"
+              v-if="task.status === 'uploading' || task.status === 'completing' || task.status === 'hashing'"
               class="h-1 rounded-full bg-border-subtle mt-1 overflow-hidden"
             >
               <div

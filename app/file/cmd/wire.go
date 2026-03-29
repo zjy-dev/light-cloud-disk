@@ -4,8 +4,6 @@
 package main
 
 import (
-	"github.com/go-kratos/kratos/contrib/registry/consul/v2"
-	"github.com/go-kratos/kratos/v2"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/google/wire"
 
@@ -15,9 +13,10 @@ import (
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/data"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/server"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/service"
+	kratosgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 )
 
-func wireApp(*conf.Server, *conf.Data, *conf.Upload, *conf.Storage, log.Logger, *consul.Registry, userv1.UserServiceClient) (*kratos.App, func(), error) {
+func wireApp(*conf.Server, *conf.Data, *conf.Upload, *conf.Storage, log.Logger, userv1.UserServiceClient) (*kratosgrpc.Server, *biz.FileUsecase, func(), error) {
 	panic(wire.Build(
 		server.ProviderSet,
 		data.ProviderSet,
@@ -26,6 +25,5 @@ func wireApp(*conf.Server, *conf.Data, *conf.Upload, *conf.Storage, log.Logger, 
 		service.ProviderSet,
 		provideStorageConfig,
 		provideStoreDir,
-		newApp,
 	))
 }

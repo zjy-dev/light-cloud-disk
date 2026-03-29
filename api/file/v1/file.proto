@@ -5,12 +5,14 @@ package api.file.v1;
 option go_package = "github.com/J-Y-Zhang/light-cloud-disk/api/file/v1;v1";
 
 service FileService {
-  // Check instant upload and resumable upload
+  // Check instant upload and resumable upload; returns upload plan with per-chunk instance assignments
   rpc CheckUpload (CheckUploadRequest) returns (CheckUploadReply);
-  // Upload file chunk
+  // Upload file chunk (kept for single-instance / fallback mode)
   rpc UploadChunk (UploadChunkRequest) returns (UploadChunkReply);
-  // Merge file chunks
-  rpc MergeChunks (MergeChunksRequest) returns (MergeChunksReply);
+  // Complete scattered upload after all chunks are uploaded directly to file-service instances
+  rpc CompleteUpload (CompleteUploadRequest) returns (CompleteUploadReply);
+  // Get download plan with per-chunk instance addresses for parallel download
+  rpc GetDownloadPlan (GetDownloadPlanRequest) returns (GetDownloadPlanReply);
   // Get user file list
   rpc ListFiles (ListFilesRequest) returns (ListFilesReply);
   // Get file download URL
@@ -65,6 +67,59 @@ message CheckUploadReply {
   string upload_mode = 4;
   // "none" | "uploading" | "completed" — indicates concurrent upload state
   string upload_status = 5;
+  // Upload plan: per-chunk instance assignments for direct upload
+  UploadPlan upload_plan = 6;
+}
+
+// Upload plan for scattered chunk upload
+message UploadPlan {
+  int32 total_chunks = 1;
+  int64 chunk_size = 2;
+  repeated ChunkAssignment assignments = 3;
+}
+
+message ChunkAssignment {
+  int32 chunk_index = 1;
+  string target_addr = 2; // file-service HTTP address (host:port)
+  string upload_url = 3; // full URL for direct upload
+}
+
+// Complete scattered upload
+message CompleteUploadRequest {
+  int64 user_id = 1;
+  int64 parent_id = 2;
+  string file_name = 3;
+  string file_md5 = 4;
+  int64 file_size = 5;
+  int32 total_chunks = 6;
+}
+
+message CompleteUploadReply {
+  bool success = 1;
+  FileInfo file = 2;
+}
+
+// Download plan for parallel chunk download
+message GetDownloadPlanRequest {
+  int64 user_id = 1;
+  int64 file_id = 2;
+}
+
+message GetDownloadPlanReply {
+  string file_name = 1;
+  string file_md5 = 2;
+  int64 file_size = 3;
+  int32 total_chunks = 4;
+  repeated ChunkLocation chunks = 5;
+  // For single-chunk or OSS files, a direct download URL may be provided
+  string direct_download_url = 6;
+}
+
+message ChunkLocation {
+  int32 chunk_index = 1;
+  int64 chunk_size = 2;
+  string download_url = 3;
+  string checksum = 4;
 }
 
 // Chunk upload
@@ -78,21 +133,6 @@ message UploadChunkRequest {
 message UploadChunkReply {
   bool success = 1;
   int32 chunk_index = 2;
-}
-
-// Merge chunks
-message MergeChunksRequest {
-  int64 user_id = 1;
-  int64 parent_id = 2;
-  string file_name = 3;
-  string file_md5 = 4;
-  int64 file_size = 5;
-  int32 total_chunks = 6;
-}
-
-message MergeChunksReply {
-  bool success = 1;
-  FileInfo file = 2;
 }
 
 // File list

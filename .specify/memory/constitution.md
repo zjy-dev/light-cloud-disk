@@ -1,10 +1,10 @@
 <!--
   Sync Impact Report
   ==================
-  Version change: 1.0.0 → 2.0.0
+  Version change: 2.0.0 → 2.1.0
   Modified principles:
-    - II. "Dual-Mode Portability" → "Single-Mode with DB Flexibility"
-    - III. Updated interface list (removed ObjectStorage/Kafka, added ErasureEncoder)
+    - II. Updated storage/MQ baseline to scattered local chunks + OSS recovery + Kafka-primary async flow
+    - III. Updated interface list to reflect Kafka primary producer and chunk-recovery erasure usage
     - IV. Updated test count baseline
     - V. Updated config file references
   Added sections: None
@@ -43,24 +43,28 @@ Kafka ↔ goroutine channel).
 
 ### II. Single-Mode with DB Flexibility
 
-The system uses a single storage architecture: **local disk as primary
-storage + LRU eviction to Alibaba Cloud OSS + goroutine MQ**.
+The system uses a single storage architecture: **scattered local chunks as
+primary storage + LRU eviction to Alibaba Cloud OSS + Kafka as the primary
+async queue**.
 
 - **Database flexibility**: MySQL (default) or SQLite, controlled by
   `DB_DRIVER` environment variable. No code-level branching beyond
   GORM dialect selection.
-- **Storage**: Local disk only. Large files are automatically encoded
-  with Reed-Solomon erasure coding (4+2) for data reliability.
-- **Message queue**: In-process goroutine buffered channel (256).
-  No external MQ dependency.
+- **Storage**: Local disk is always the hot tier. Direct uploads are stored as
+  scattered chunks across file-service instances; each chunk also produces
+  Reed-Solomon recovery shards written to OSS so healthy instances can rebuild
+  failed chunks on demand.
+- **Message queue**: Kafka is the primary production queue for cold migration
+  and thumbnail events. When `KAFKA_BROKERS` is unset, local development may
+  fall back to the in-process goroutine queue.
 
 Code MUST NOT use compile-time flags or build tags to differentiate
 database drivers (except `integration` tests).
 
-**Rationale**: A single storage mode simplifies deployment, reduces
-operational complexity, and eliminates dual-path maintenance burden.
-DB flexibility is retained because SQLite is useful for development
-and personal use.
+**Rationale**: A single scattered-storage mode simplifies deployment,
+eliminates gateway upload bottlenecks, and keeps failure recovery centered on
+chunk metadata plus OSS recovery shards. DB flexibility is retained because
+SQLite is useful for development and personal use.
 
 ### III. Interface-Driven Cross-Service Communication
 
@@ -70,11 +74,13 @@ Biz layer.
 - File Service → User Service: `biz.UserClient` interface,
   implemented via gRPC in `data/user_client.go`.
 - File Service → MQ: `biz.MessageProducer` interface, implemented
-  by `data/mq_goroutine.go` (in-process goroutine channel).
+  by `data/mq_kafka.go` in production and `data/mq_goroutine.go` as the local
+  development fallback.
 - File Service → Storage: `biz.CloudStorage` interface, implemented
   by OSS (alibabacloud-oss-go-sdk-v2) with noop fallback.
 - File Service → Erasure Coding: `biz.ErasureEncoder` interface,
-  implemented by `data/erasure.go` (klauspost/reedsolomon).
+  implemented by `data/erasure.go` (klauspost/reedsolomon) for chunk recovery
+  shards and legacy local_ec reconstruction.
 
 Direct service-to-service calls or shared database access are
 PROHIBITED.
@@ -196,4 +202,4 @@ deliverable that demonstrates engineering maturity.
 - **Compliance review**: every feature PR MUST reference the relevant
   principle(s) it satisfies or justify deviations.
 
-**Version**: 2.0.0 | **Ratified**: 2026-03-28 | **Last Amended**: 2026-07-21
+**Version**: 2.1.0 | **Ratified**: 2026-03-28 | **Last Amended**: 2026-07-22

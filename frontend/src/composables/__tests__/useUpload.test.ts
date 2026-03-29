@@ -3,8 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/api/file', () => ({
   fileApi: {
     checkUpload: vi.fn(),
-    uploadChunk: vi.fn(),
-    mergeChunks: vi.fn(),
+    completeUpload: vi.fn(),
   },
 }))
 
@@ -43,7 +42,7 @@ describe('useUpload', () => {
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
       data: { canFastUpload: true, uploadedChunks: [] },
     } as never)
-    vi.mocked(fileApi.mergeChunks).mockResolvedValue({
+    vi.mocked(fileApi.completeUpload).mockResolvedValue({
       data: { success: true, file: { id: 1 } },
     } as never)
 
@@ -66,19 +65,31 @@ describe('useUpload', () => {
     expect(task!.status).toBe('done')
     expect(task!.progress).toBe(100)
     expect(onComplete).toHaveBeenCalled()
-    expect(fileApi.mergeChunks).toHaveBeenCalled()
+    expect(fileApi.completeUpload).toHaveBeenCalled()
   })
 
-  it('uploadFile handles chunked upload', async () => {
+  it('uploadFile handles scattered chunk upload with upload plan', async () => {
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
-      data: { canFastUpload: false, uploadedChunks: [] },
+      data: {
+        canFastUpload: false,
+        uploadedChunks: [],
+        uploadMode: 'direct',
+        uploadPlan: {
+          totalChunks: 1,
+          chunkSize: 5242880,
+          assignments: [
+            { chunkIndex: 0, targetAddr: '10.0.0.1:9003', uploadUrl: 'http://10.0.0.1:9003/api/v1/chunks/mockedmd5hashvalue/0' },
+          ],
+        },
+      },
     } as never)
-    vi.mocked(fileApi.uploadChunk).mockResolvedValue({
-      data: { success: true, chunkIndex: 0 },
-    } as never)
-    vi.mocked(fileApi.mergeChunks).mockResolvedValue({
+    vi.mocked(fileApi.completeUpload).mockResolvedValue({
       data: { success: true, file: { id: 2 } },
     } as never)
+
+    // Mock fetch for direct chunk upload to file-service
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true } as Response)
+    vi.stubGlobal('fetch', fetchMock)
 
     Object.defineProperty(globalThis, 'crypto', {
       value: { randomUUID: () => 'test-uuid-456' },
@@ -95,8 +106,18 @@ describe('useUpload', () => {
     const task = tasks.value.find((t) => t.fileName === 'small.txt')
     expect(task).toBeDefined()
     expect(task!.status).toBe('done')
-    expect(fileApi.uploadChunk).toHaveBeenCalled()
-    expect(fileApi.mergeChunks).toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://10.0.0.1:9003/api/v1/chunks/mockedmd5hashvalue/0',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          'X-File-Size': String(file.size),
+        }),
+      }),
+    )
+    expect(fileApi.completeUpload).toHaveBeenCalled()
+
+    vi.unstubAllGlobals()
   })
 
   it('uploadFile handles errors', async () => {
@@ -130,7 +151,7 @@ describe('useUpload', () => {
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
       data: { canFastUpload: true, uploadedChunks: [] },
     } as never)
-    vi.mocked(fileApi.mergeChunks).mockResolvedValue({
+    vi.mocked(fileApi.completeUpload).mockResolvedValue({
       data: { success: true, file: { id: 1 } },
     } as never)
 
@@ -155,7 +176,7 @@ describe('useUpload', () => {
     vi.mocked(fileApi.checkUpload).mockResolvedValue({
       data: { canFastUpload: true, uploadedChunks: [] },
     } as never)
-    vi.mocked(fileApi.mergeChunks).mockResolvedValue({
+    vi.mocked(fileApi.completeUpload).mockResolvedValue({
       data: { success: true, file: { id: 1 } },
     } as never)
 

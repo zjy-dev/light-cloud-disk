@@ -41,22 +41,46 @@ export interface TrashFileInfo {
   expireAt: number
 }
 
+export interface ChunkAssignment {
+  chunkIndex: number
+  targetAddr: string
+  uploadUrl: string
+}
+
+export interface UploadPlan {
+  totalChunks: number
+  chunkSize: number
+  assignments: ChunkAssignment[]
+}
+
 export interface CheckUploadReply {
   canFastUpload: boolean
   uploadedChunks: number[]
   diskFull?: boolean
   uploadMode?: 'direct' | 'presigned'
   uploadStatus?: string
+  uploadPlan?: UploadPlan
 }
 
-export interface UploadChunkReply {
-  success: boolean
-  chunkIndex: number
-}
-
-export interface MergeChunksReply {
+export interface CompleteUploadReply {
   success: boolean
   file: FileInfo
+}
+
+export interface ChunkLocation {
+  chunkIndex: number
+  chunkSize: number
+  downloadUrl: string
+  checksum: string
+  backupUrls?: string[]
+}
+
+export interface DownloadPlanReply {
+  fileName: string
+  fileMd5: string
+  fileSize: number
+  totalChunks: number
+  chunks: ChunkLocation[]
 }
 
 // ---- Presigned multipart upload ----

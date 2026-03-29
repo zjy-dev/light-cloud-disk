@@ -8,9 +8,9 @@
 
 | 维度 | Direct 模式 | Presigned 模式 |
 |------|-------------|----------------|
-| 数据路径 | 浏览器 → Gateway → File Service → 本地磁盘 | 浏览器 → 阿里云 OSS（直传） |
+| 数据路径 | 浏览器 → File Service HTTP 实例 (按 UploadPlan 直传) | 浏览器 → 阿里云 OSS（直传） |
 | 适用场景 | 本地磁盘未满 | 本地磁盘已满（降级为 OSS） |
-| 后端压力 | 高（所有字节经后端） | 低（仅签发 URL + 元数据管理） |
+| 后端压力 | 低（Gateway 不转发字节流，file-service 只接收分配到自己的 chunk） | 低（仅签发 URL + 元数据管理） |
 | 断点续传 | Redis chunk 状态 | upload_sessions + upload_parts 表 |
 | 跨设备续传 | ❌（chunk 和 Redis 绑定同一节点） | ✅（session 持久化到 DB，任意设备可续） |
 
@@ -22,7 +22,7 @@ CheckUpload()
 ├── MD5 命中 → 秒传 (upload_mode = "direct")
 │
 ├── 本地磁盘未满 → upload_mode = "direct"
-│   （走传统 SaveChunk + MergeChunks + 纠删码编码）
+│   （走 UploadPlan + 直传 chunk + CompleteUpload）
 │
 └── 本地磁盘已满 → upload_mode = "presigned"
     （降级为阿里云 OSS 预签名上传）

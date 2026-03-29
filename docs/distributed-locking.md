@@ -24,7 +24,7 @@ TTL:  30 秒
 
 **容错**: 写入失败时，通过 `defer` 确保锁被释放，不会阻塞其他实例重试。
 
-### 2. Merge 级互斥锁 (MergeChunks)
+### 2. CompleteUpload 级互斥锁
 
 ```
 key:     merge_lock:{fileMD5}
@@ -33,7 +33,7 @@ value:   随机 UUID (owner token)
 操作:    SETNX + Lua 脚本原子释放
 ```
 
-**目的**: 确保全局只有一个实例执行合并操作。
+**目的**: 确保全局只有一个实例执行 `CompleteUpload`，避免重复创建同一个 FileStore。
 
 **Lua 解锁脚本**:
 ```lua
@@ -53,14 +53,14 @@ end
 1. **CheckUpload** 检测到 `FindStoreByMD5` 返回 `uploading` 状态
 2. 返回 `upload_status: "uploading"` 告知客户端加入协作
 3. 客户端可以上传缺失的分块，加速整体上传
-4. 任何客户端都可以在所有分块就位后触发 MergeChunks
+4. 任何客户端都可以在所有分块就位后触发 CompleteUpload
 
 ## Redis 数据结构
 
 | Key 模式 | 类型 | 用途 |
 |-----------|------|------|
 | `chunk_lock:{md5}:{idx}` | String | 分块写入互斥锁 |
-| `merge_lock:{md5}` | String | 合并操作互斥锁 (值为 owner UUID) |
+| `merge_lock:{md5}` | String | CompleteUpload 互斥锁 (值为 owner UUID) |
 | `uploaded_chunks:{md5}` | Set | 已上传分块索引集合 |
 | `disk_usage:local` | String | 本地磁盘已用量 (INCRBY 原子计数) |
 
@@ -68,7 +68,7 @@ end
 
 当一致性哈希重新平衡后，分块可能需要重新上传到新实例：
 
-1. `MergeChunks` 在获取锁后检查 `CountUploadedChunks`
+1. `CompleteUpload` 在获取锁后检查 `CountChunkRecords`
 2. 如果本地分块数不足，返回错误提示客户端重新上传缺失分块
 3. `CreateStoreWithStatus` 使用 MySQL UNIQUE 约束处理竞态
 
@@ -76,5 +76,5 @@ end
 
 | 文件 | 职责 |
 |------|------|
-| `app/file/internal/biz/file.go` | 锁获取/释放调用，merge 流程编排 |
+| `app/file/internal/biz/file.go` | 锁获取/释放调用，CompleteUpload 流程编排 |
 | `app/file/internal/data/file.go` | Redis SETNX/Lua 脚本实现 |

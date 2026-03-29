@@ -28,6 +28,7 @@ type Bootstrap struct {
 	Data          *Data                  `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	Upload        *Upload                `protobuf:"bytes,3,opt,name=upload,proto3" json:"upload,omitempty"`
 	Storage       *Storage               `protobuf:"bytes,4,opt,name=storage,proto3" json:"storage,omitempty"`
+	Kafka         *Kafka                 `protobuf:"bytes,5,opt,name=kafka,proto3" json:"kafka,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -90,6 +91,73 @@ func (x *Bootstrap) GetStorage() *Storage {
 	return nil
 }
 
+func (x *Bootstrap) GetKafka() *Kafka {
+	if x != nil {
+		return x.Kafka
+	}
+	return nil
+}
+
+type Kafka struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Brokers           []string               `protobuf:"bytes,1,rep,name=brokers,proto3" json:"brokers,omitempty"`
+	CloudMigrateTopic string                 `protobuf:"bytes,2,opt,name=cloud_migrate_topic,json=cloudMigrateTopic,proto3" json:"cloud_migrate_topic,omitempty"`
+	ThumbnailTopic    string                 `protobuf:"bytes,3,opt,name=thumbnail_topic,json=thumbnailTopic,proto3" json:"thumbnail_topic,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *Kafka) Reset() {
+	*x = Kafka{}
+	mi := &file_conf_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Kafka) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Kafka) ProtoMessage() {}
+
+func (x *Kafka) ProtoReflect() protoreflect.Message {
+	mi := &file_conf_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Kafka.ProtoReflect.Descriptor instead.
+func (*Kafka) Descriptor() ([]byte, []int) {
+	return file_conf_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Kafka) GetBrokers() []string {
+	if x != nil {
+		return x.Brokers
+	}
+	return nil
+}
+
+func (x *Kafka) GetCloudMigrateTopic() string {
+	if x != nil {
+		return x.CloudMigrateTopic
+	}
+	return ""
+}
+
+func (x *Kafka) GetThumbnailTopic() string {
+	if x != nil {
+		return x.ThumbnailTopic
+	}
+	return ""
+}
+
 type Server struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Grpc          *Server_GRPC           `protobuf:"bytes,1,opt,name=grpc,proto3" json:"grpc,omitempty"`
@@ -99,7 +167,7 @@ type Server struct {
 
 func (x *Server) Reset() {
 	*x = Server{}
-	mi := &file_conf_proto_msgTypes[1]
+	mi := &file_conf_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -111,7 +179,7 @@ func (x *Server) String() string {
 func (*Server) ProtoMessage() {}
 
 func (x *Server) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[1]
+	mi := &file_conf_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -124,7 +192,7 @@ func (x *Server) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server.ProtoReflect.Descriptor instead.
 func (*Server) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{1}
+	return file_conf_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Server) GetGrpc() *Server_GRPC {
@@ -144,7 +212,7 @@ type Data struct {
 
 func (x *Data) Reset() {
 	*x = Data{}
-	mi := &file_conf_proto_msgTypes[2]
+	mi := &file_conf_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -156,7 +224,7 @@ func (x *Data) String() string {
 func (*Data) ProtoMessage() {}
 
 func (x *Data) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[2]
+	mi := &file_conf_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -169,7 +237,7 @@ func (x *Data) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data.ProtoReflect.Descriptor instead.
 func (*Data) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{2}
+	return file_conf_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Data) GetDatabase() *Data_Database {
@@ -197,7 +265,7 @@ type Upload struct {
 
 func (x *Upload) Reset() {
 	*x = Upload{}
-	mi := &file_conf_proto_msgTypes[3]
+	mi := &file_conf_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -209,7 +277,7 @@ func (x *Upload) String() string {
 func (*Upload) ProtoMessage() {}
 
 func (x *Upload) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[3]
+	mi := &file_conf_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -222,7 +290,7 @@ func (x *Upload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Upload.ProtoReflect.Descriptor instead.
 func (*Upload) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{3}
+	return file_conf_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Upload) GetChunkSize() int64 {
@@ -262,7 +330,7 @@ type Storage struct {
 
 func (x *Storage) Reset() {
 	*x = Storage{}
-	mi := &file_conf_proto_msgTypes[4]
+	mi := &file_conf_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -274,7 +342,7 @@ func (x *Storage) String() string {
 func (*Storage) ProtoMessage() {}
 
 func (x *Storage) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[4]
+	mi := &file_conf_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -287,7 +355,7 @@ func (x *Storage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Storage.ProtoReflect.Descriptor instead.
 func (*Storage) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{4}
+	return file_conf_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Storage) GetPrimaryMaxBytes() int64 {
@@ -336,7 +404,7 @@ type Server_GRPC struct {
 
 func (x *Server_GRPC) Reset() {
 	*x = Server_GRPC{}
-	mi := &file_conf_proto_msgTypes[5]
+	mi := &file_conf_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -348,7 +416,7 @@ func (x *Server_GRPC) String() string {
 func (*Server_GRPC) ProtoMessage() {}
 
 func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[5]
+	mi := &file_conf_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -361,7 +429,7 @@ func (x *Server_GRPC) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Server_GRPC.ProtoReflect.Descriptor instead.
 func (*Server_GRPC) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{1, 0}
+	return file_conf_proto_rawDescGZIP(), []int{2, 0}
 }
 
 func (x *Server_GRPC) GetNetwork() string {
@@ -397,7 +465,7 @@ type Data_Database struct {
 
 func (x *Data_Database) Reset() {
 	*x = Data_Database{}
-	mi := &file_conf_proto_msgTypes[6]
+	mi := &file_conf_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -409,7 +477,7 @@ func (x *Data_Database) String() string {
 func (*Data_Database) ProtoMessage() {}
 
 func (x *Data_Database) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[6]
+	mi := &file_conf_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -422,7 +490,7 @@ func (x *Data_Database) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Database.ProtoReflect.Descriptor instead.
 func (*Data_Database) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{2, 0}
+	return file_conf_proto_rawDescGZIP(), []int{3, 0}
 }
 
 func (x *Data_Database) GetDriver() string {
@@ -463,7 +531,7 @@ type Data_Redis struct {
 
 func (x *Data_Redis) Reset() {
 	*x = Data_Redis{}
-	mi := &file_conf_proto_msgTypes[7]
+	mi := &file_conf_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +543,7 @@ func (x *Data_Redis) String() string {
 func (*Data_Redis) ProtoMessage() {}
 
 func (x *Data_Redis) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[7]
+	mi := &file_conf_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +556,7 @@ func (x *Data_Redis) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Data_Redis.ProtoReflect.Descriptor instead.
 func (*Data_Redis) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{2, 1}
+	return file_conf_proto_rawDescGZIP(), []int{3, 1}
 }
 
 func (x *Data_Redis) GetReadTimeout() *durationpb.Duration {
@@ -518,7 +586,7 @@ type Storage_OSS struct {
 
 func (x *Storage_OSS) Reset() {
 	*x = Storage_OSS{}
-	mi := &file_conf_proto_msgTypes[8]
+	mi := &file_conf_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -530,7 +598,7 @@ func (x *Storage_OSS) String() string {
 func (*Storage_OSS) ProtoMessage() {}
 
 func (x *Storage_OSS) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[8]
+	mi := &file_conf_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -543,7 +611,7 @@ func (x *Storage_OSS) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Storage_OSS.ProtoReflect.Descriptor instead.
 func (*Storage_OSS) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{4, 0}
+	return file_conf_proto_rawDescGZIP(), []int{5, 0}
 }
 
 func (x *Storage_OSS) GetEndpoint() string {
@@ -592,7 +660,7 @@ type Storage_ErasureCoding struct {
 
 func (x *Storage_ErasureCoding) Reset() {
 	*x = Storage_ErasureCoding{}
-	mi := &file_conf_proto_msgTypes[9]
+	mi := &file_conf_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -604,7 +672,7 @@ func (x *Storage_ErasureCoding) String() string {
 func (*Storage_ErasureCoding) ProtoMessage() {}
 
 func (x *Storage_ErasureCoding) ProtoReflect() protoreflect.Message {
-	mi := &file_conf_proto_msgTypes[9]
+	mi := &file_conf_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -617,7 +685,7 @@ func (x *Storage_ErasureCoding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Storage_ErasureCoding.ProtoReflect.Descriptor instead.
 func (*Storage_ErasureCoding) Descriptor() ([]byte, []int) {
-	return file_conf_proto_rawDescGZIP(), []int{4, 1}
+	return file_conf_proto_rawDescGZIP(), []int{5, 1}
 }
 
 func (x *Storage_ErasureCoding) GetDataShards() int32 {
@@ -647,12 +715,17 @@ const file_conf_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
 	"conf.proto\x12\n" +
-	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\xb8\x01\n" +
+	"kratos.api\x1a\x1egoogle/protobuf/duration.proto\"\xe1\x01\n" +
 	"\tBootstrap\x12*\n" +
 	"\x06server\x18\x01 \x01(\v2\x12.kratos.api.ServerR\x06server\x12$\n" +
 	"\x04data\x18\x02 \x01(\v2\x10.kratos.api.DataR\x04data\x12*\n" +
 	"\x06upload\x18\x03 \x01(\v2\x12.kratos.api.UploadR\x06upload\x12-\n" +
-	"\astorage\x18\x04 \x01(\v2\x13.kratos.api.StorageR\astorage\"\xa0\x01\n" +
+	"\astorage\x18\x04 \x01(\v2\x13.kratos.api.StorageR\astorage\x12'\n" +
+	"\x05kafka\x18\x05 \x01(\v2\x11.kratos.api.KafkaR\x05kafka\"z\n" +
+	"\x05Kafka\x12\x18\n" +
+	"\abrokers\x18\x01 \x03(\tR\abrokers\x12.\n" +
+	"\x13cloud_migrate_topic\x18\x02 \x01(\tR\x11cloudMigrateTopic\x12'\n" +
+	"\x0fthumbnail_topic\x18\x03 \x01(\tR\x0ethumbnailTopic\"\xa0\x01\n" +
 	"\x06Server\x12+\n" +
 	"\x04grpc\x18\x01 \x01(\v2\x17.kratos.api.Server.GRPCR\x04grpc\x1ai\n" +
 	"\x04GRPC\x12\x18\n" +
@@ -705,39 +778,41 @@ func file_conf_proto_rawDescGZIP() []byte {
 	return file_conf_proto_rawDescData
 }
 
-var file_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_conf_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_conf_proto_goTypes = []any{
 	(*Bootstrap)(nil),             // 0: kratos.api.Bootstrap
-	(*Server)(nil),                // 1: kratos.api.Server
-	(*Data)(nil),                  // 2: kratos.api.Data
-	(*Upload)(nil),                // 3: kratos.api.Upload
-	(*Storage)(nil),               // 4: kratos.api.Storage
-	(*Server_GRPC)(nil),           // 5: kratos.api.Server.GRPC
-	(*Data_Database)(nil),         // 6: kratos.api.Data.Database
-	(*Data_Redis)(nil),            // 7: kratos.api.Data.Redis
-	(*Storage_OSS)(nil),           // 8: kratos.api.Storage.OSS
-	(*Storage_ErasureCoding)(nil), // 9: kratos.api.Storage.ErasureCoding
-	(*durationpb.Duration)(nil),   // 10: google.protobuf.Duration
+	(*Kafka)(nil),                 // 1: kratos.api.Kafka
+	(*Server)(nil),                // 2: kratos.api.Server
+	(*Data)(nil),                  // 3: kratos.api.Data
+	(*Upload)(nil),                // 4: kratos.api.Upload
+	(*Storage)(nil),               // 5: kratos.api.Storage
+	(*Server_GRPC)(nil),           // 6: kratos.api.Server.GRPC
+	(*Data_Database)(nil),         // 7: kratos.api.Data.Database
+	(*Data_Redis)(nil),            // 8: kratos.api.Data.Redis
+	(*Storage_OSS)(nil),           // 9: kratos.api.Storage.OSS
+	(*Storage_ErasureCoding)(nil), // 10: kratos.api.Storage.ErasureCoding
+	(*durationpb.Duration)(nil),   // 11: google.protobuf.Duration
 }
 var file_conf_proto_depIdxs = []int32{
-	1,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
-	2,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
-	3,  // 2: kratos.api.Bootstrap.upload:type_name -> kratos.api.Upload
-	4,  // 3: kratos.api.Bootstrap.storage:type_name -> kratos.api.Storage
-	5,  // 4: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
-	6,  // 5: kratos.api.Data.database:type_name -> kratos.api.Data.Database
-	7,  // 6: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
-	8,  // 7: kratos.api.Storage.oss:type_name -> kratos.api.Storage.OSS
-	9,  // 8: kratos.api.Storage.erasure_coding:type_name -> kratos.api.Storage.ErasureCoding
-	10, // 9: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
-	10, // 10: kratos.api.Data.Database.conn_max_lifetime:type_name -> google.protobuf.Duration
-	10, // 11: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
-	10, // 12: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	2,  // 0: kratos.api.Bootstrap.server:type_name -> kratos.api.Server
+	3,  // 1: kratos.api.Bootstrap.data:type_name -> kratos.api.Data
+	4,  // 2: kratos.api.Bootstrap.upload:type_name -> kratos.api.Upload
+	5,  // 3: kratos.api.Bootstrap.storage:type_name -> kratos.api.Storage
+	1,  // 4: kratos.api.Bootstrap.kafka:type_name -> kratos.api.Kafka
+	6,  // 5: kratos.api.Server.grpc:type_name -> kratos.api.Server.GRPC
+	7,  // 6: kratos.api.Data.database:type_name -> kratos.api.Data.Database
+	8,  // 7: kratos.api.Data.redis:type_name -> kratos.api.Data.Redis
+	9,  // 8: kratos.api.Storage.oss:type_name -> kratos.api.Storage.OSS
+	10, // 9: kratos.api.Storage.erasure_coding:type_name -> kratos.api.Storage.ErasureCoding
+	11, // 10: kratos.api.Server.GRPC.timeout:type_name -> google.protobuf.Duration
+	11, // 11: kratos.api.Data.Database.conn_max_lifetime:type_name -> google.protobuf.Duration
+	11, // 12: kratos.api.Data.Redis.read_timeout:type_name -> google.protobuf.Duration
+	11, // 13: kratos.api.Data.Redis.write_timeout:type_name -> google.protobuf.Duration
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_conf_proto_init() }
@@ -751,7 +826,7 @@ func file_conf_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_conf_proto_rawDesc), len(file_conf_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

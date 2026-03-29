@@ -2,10 +2,7 @@ package data
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +11,7 @@ import (
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
 )
@@ -43,6 +41,7 @@ type FileStorePO struct {
 	StorePath      string    `gorm:"size:512;not null"`
 	StorageType    string    `gorm:"size:16;not null;default:local"`
 	UploadStatus   string    `gorm:"size:16;not null;default:uploading"`
+	TotalChunks    int32     `gorm:"default:0"`
 	RefCount       int32     `gorm:"default:1"`
 	LastAccessedAt time.Time `gorm:"autoUpdateTime"`
 	CreatedAt      time.Time
@@ -113,6 +112,24 @@ type UploadPartPO struct {
 
 func (UploadPartPO) TableName() string {
 	return "upload_parts"
+}
+
+// ChunkRecordPO records where a file chunk is physically stored (scattered storage).
+type ChunkRecordPO struct {
+	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	FileMD5     string `gorm:"uniqueIndex:idx_chunk_record;size:32;not null"`
+	FileSize    int64  `gorm:"uniqueIndex:idx_chunk_record;not null"`
+	ChunkIndex  int32  `gorm:"uniqueIndex:idx_chunk_record;not null"`
+	ChunkSize   int64  `gorm:"not null"`
+	InstanceID  string `gorm:"size:128;not null"`
+	StorePath   string `gorm:"size:512;not null"`
+	Checksum    string `gorm:"size:64"`
+	StorageType string `gorm:"size:16;not null;default:local"`
+	CreatedAt   time.Time
+}
+
+func (ChunkRecordPO) TableName() string {
+	return "chunk_records"
 }
 
 type fileRepo struct {
@@ -470,54 +487,6 @@ func (r *fileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex
 	return os.WriteFile(chunkPath, data, 0o644)
 }
 
-func (r *fileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error) {
-	_ = ctx
-
-	chunkDir := filepath.Join(chunkRootDir(), fileMD5)
-	if err := os.MkdirAll(storeRootDir(), 0o755); err != nil {
-		return "", err
-	}
-
-	ext := filepath.Ext(fileName)
-	if ext == "" {
-		ext = ".bin"
-	}
-	storePath := filepath.Join(storeRootDir(), fileMD5+ext)
-
-	out, err := os.Create(storePath)
-	if err != nil {
-		return "", err
-	}
-	defer out.Close()
-	hasher := md5.New()
-	multiWriter := io.MultiWriter(out, hasher)
-
-	for i := int32(0); i < totalChunks; i++ {
-		partPath := filepath.Join(chunkDir, fmt.Sprintf("%06d.part", i))
-		part, err := os.Open(partPath)
-		if err != nil {
-			return "", err
-		}
-		if _, err := io.Copy(multiWriter, part); err != nil {
-			part.Close()
-			return "", err
-		}
-		part.Close()
-	}
-
-	actualMD5 := hex.EncodeToString(hasher.Sum(nil))
-	if actualMD5 != fileMD5 {
-		_ = os.Remove(storePath)
-		return "", fmt.Errorf("merged file MD5 mismatch: expected %s, got %s", fileMD5, actualMD5)
-	}
-
-	if err := os.RemoveAll(chunkDir); err != nil {
-		r.log.Warnf("Could not remove chunk directory %s: %v", chunkDir, err)
-	}
-
-	return storePath, nil
-}
-
 func (r *fileRepo) ClearChunkInfo(ctx context.Context, fileMD5 string) error {
 	key := fmt.Sprintf("upload:%s:chunks", fileMD5)
 	return r.data.redis.Del(ctx, key).Err()
@@ -694,6 +663,97 @@ func (r *fileRepo) DeleteUploadSession(ctx context.Context, sessionID string) er
 		}
 		return tx.Where("id = ?", sessionID).Delete(&UploadSessionPO{}).Error
 	})
+}
+
+// ---- ChunkRecord operations (scattered storage) ----
+
+func (r *fileRepo) CreateChunkRecord(ctx context.Context, record *biz.ChunkRecord) error {
+	po := &ChunkRecordPO{
+		FileMD5:     record.FileMD5,
+		FileSize:    record.FileSize,
+		ChunkIndex:  record.ChunkIndex,
+		ChunkSize:   record.ChunkSize,
+		InstanceID:  record.InstanceID,
+		StorePath:   record.StorePath,
+		Checksum:    record.Checksum,
+		StorageType: record.StorageType,
+	}
+	if err := r.data.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "file_md5"}, {Name: "file_size"}, {Name: "chunk_index"}},
+			DoUpdates: clause.AssignmentColumns([]string{"chunk_size", "instance_id", "store_path", "checksum", "storage_type"}),
+		}).
+		Create(po).Error; err != nil {
+		return err
+	}
+	record.ID = po.ID
+	record.CreatedAt = po.CreatedAt
+	return nil
+}
+
+func (r *fileRepo) FindChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) ([]*biz.ChunkRecord, error) {
+	var pos []ChunkRecordPO
+	if err := r.data.db.WithContext(ctx).
+		Where("file_md5 = ? AND file_size = ?", fileMD5, fileSize).
+		Order("chunk_index ASC").
+		Find(&pos).Error; err != nil {
+		return nil, err
+	}
+	records := make([]*biz.ChunkRecord, len(pos))
+	for i, po := range pos {
+		records[i] = r.chunkRecordPOToDomain(&po)
+	}
+	return records, nil
+}
+
+func (r *fileRepo) FindChunkRecordByIndex(ctx context.Context, fileMD5 string, fileSize int64, index int32) (*biz.ChunkRecord, error) {
+	var po ChunkRecordPO
+	if err := r.data.db.WithContext(ctx).
+		Where("file_md5 = ? AND file_size = ? AND chunk_index = ?", fileMD5, fileSize, index).
+		First(&po).Error; err != nil {
+		return nil, err
+	}
+	return r.chunkRecordPOToDomain(&po), nil
+}
+
+func (r *fileRepo) CountChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) (int32, error) {
+	var count int64
+	if err := r.data.db.WithContext(ctx).Model(&ChunkRecordPO{}).
+		Where("file_md5 = ? AND file_size = ?", fileMD5, fileSize).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return int32(count), nil
+}
+
+func (r *fileRepo) DeleteChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) error {
+	return r.data.db.WithContext(ctx).
+		Where("file_md5 = ? AND file_size = ?", fileMD5, fileSize).
+		Delete(&ChunkRecordPO{}).Error
+}
+
+func (r *fileRepo) UpdateChunkStorageLocation(ctx context.Context, id int64, storageType, newPath string) error {
+	return r.data.db.WithContext(ctx).Model(&ChunkRecordPO{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"storage_type": storageType,
+			"store_path":   newPath,
+		}).Error
+}
+
+func (r *fileRepo) chunkRecordPOToDomain(po *ChunkRecordPO) *biz.ChunkRecord {
+	return &biz.ChunkRecord{
+		ID:          po.ID,
+		FileMD5:     po.FileMD5,
+		FileSize:    po.FileSize,
+		ChunkIndex:  po.ChunkIndex,
+		ChunkSize:   po.ChunkSize,
+		InstanceID:  po.InstanceID,
+		StorePath:   po.StorePath,
+		Checksum:    po.Checksum,
+		StorageType: po.StorageType,
+		CreatedAt:   po.CreatedAt,
+	}
 }
 
 func (r *fileRepo) sessionToDomain(po *UploadSessionPO) *biz.UploadSession {
