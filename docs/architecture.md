@@ -2,156 +2,89 @@
 
 ## 概述
 
-本项目采用微服务架构，将云盘系统拆分为三个独立部署的服务：User Service、File Service 和 API Gateway。服务间通过 gRPC 通信，使用 Consul 进行服务发现。
+当前系统由三个长期运行的服务组成：
 
-## 架构图
+- User Service：用户与配额
+- File Service：打散上传、分块下载、冷迁移、恢复重建
+- API Gateway：HTTP 入口、鉴权、服务发现、上传计划和恢复代理
 
-```
-    Client (浏览器/APP)
-         │ HTTP
-         ▼
-┌─────────────────────────────────┐
-│       Gin API Gateway           │
-│     (HTTP :8080)                │
-│     - JWT 认证                  │
-│     - CORS 跨域                │
-│     - MD5 一致性哈希路由         │
-│     - HTTP→gRPC 协议转换        │
-└────────┬───────────────┬────────┘
-    gRPC │               │ gRPC
-    (Consul 发现)        (Consul 发现 + hash ring)
-         ▼               ▼
-┌────────────────┐ ┌────────────────┐
-│  User Service  │ │  File Service  │
-│  (gRPC :9001)  │◄│  (gRPC :9002)  │
-│  Kratos v2     │ │  Kratos v2     │
-│                │ │                │
-│  - 用户注册/登录│ │  - 分块上传    │
-│  - 信息管理     │ │  - 秒传/续传   │
-│  - 存储配额     │ │  - 文件管理    │
-│                │ │  - 纠删码编码   │
-│                │ │  - 回收站/分享  │
-└───────┬────────┘ └──┬────┬───┬───┘
-        │             │    │   │
-        ▼             ▼    ▼   ▼
-    ┌────────┐   ┌──────┐ ┌─────┐ ┌───────────┐
-    │ MySQL  │   │MySQL │ │Redis│ │ 本地磁盘   │
-    │/SQLite │   │/SQLite│ │     │ │ (EC shards)│
-    └────────┘   └──────┘ └─────┘ └───────────┘
+主路径的设计目标很明确：上传和下载的数据面尽量绕过网关，网关只承担控制面和失败兜底。
 
-    ← ─ ─ Consul 服务注册与发现 ─ ─ →
-
-    File Service ──→ goroutine MQ ──→ 阿里云 OSS (冷存)
-    (LRU 淘汰触发)
-
-    分布式锁: Redis SETNX + Lua 脚本
-    纠删码:   Reed-Solomon 4+2 (本地容错)
-```
-
-## 分层架构 (Clean Architecture)
-
-每个 Kratos 服务内部采用四层架构：
+## 当前拓扑
 
 ```
-┌─────────────────────────────────────────┐
-│            Service Layer                │
-│   - 接收 gRPC 请求                      │
-│   - 参数校验和转换                      │
-│   - 调用 Biz 层                         │
-│   - 组装 proto Reply                    │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│              Biz Layer                  │
-│   - 核心业务逻辑                        │
-│   - 定义 Repo 接口 (依赖倒置)           │
-│   - 定义 Client 接口 (跨服务调用)       │
-│   - 不依赖任何具体实现                  │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│              Data Layer                 │
-│   - 实现 Repo 接口 (GORM/Redis)        │
-│   - 实现 Client 接口 (gRPC)            │
-│   - 数据库模型定义                      │
-└─────────────────────────────────────────┘
+Client
+  │
+  ├── CheckUpload / CompleteUpload / GetDownloadPlan ─▶ Gateway :8080
+  │                                                      │
+  │                                                      ├── gRPC ─▶ User Service :9001
+  │                                                      └── gRPC ─▶ File Service :9002
+  │
+  ├── PUT /api/v1/chunks/:md5/:index ──────────────────▶ File Service HTTP :9003 ×N
+  ├── GET /api/v1/chunks/:md5/:index ──────────────────▶ File Service HTTP :9003 ×N
+  └── GET /api/v1/file/chunks/:md5/:index/recovery ───▶ Gateway recovery proxy
+                                                           │
+                                                           └── 健康实例从 OSS 恢复分片重建 chunk
+
+File Service ──▶ Kafka ──▶ OSS
+          └────▶ Redis / MySQL(or SQLite)
 ```
 
-### 依赖倒置示例
+## 关键数据流
 
-File Service 需要调用 User Service 更新存储用量。在 Biz 层定义接口，Data 层通过 gRPC 实现：
+### 1. 打散上传
 
-```go
-// biz/file.go - interface definition
-type UserClient interface {
-    UpdateStorageUsed(ctx context.Context, userID int64, sizeDelta int64) error
-}
+1. 客户端请求 `CheckUpload`。
+2. Gateway 基于一致性哈希生成 UploadPlan。
+3. 浏览器并发直传 chunk 到多个 file-service HTTP 实例。
+4. 每个 chunk 写本地磁盘、登记 `chunk_records`，并生成恢复分片到 OSS。
+5. `CompleteUpload` 只校验元数据完整性并创建 FileStore/File，不做合并。
 
-// data/user_client.go - gRPC implementation
-type userClientImpl struct {
-    client userv1.UserServiceClient // gRPC 客户端
-}
+### 2. 并发下载
 
-func (c *userClientImpl) UpdateStorageUsed(ctx context.Context, userID, sizeDelta int64) error {
-    _, err := c.client.UpdateStorageUsed(ctx, &userv1.UpdateStorageUsedRequest{
-        UserId:    userID,
-        SizeDelta: sizeDelta,
-    })
-    return err
-}
-```
+1. 客户端请求 `GetDownloadPlan`。
+2. Gateway 返回每块的主下载地址和 recovery 备用地址。
+3. 浏览器优先直连主 chunk 地址，失败后再请求 recovery URL。
+4. recovery 请求由健康实例从 OSS 恢复分片重建 chunk 并返回。
 
-## 关键设计决策
+### 3. 冷热迁移
 
-### 1. gRPC-only 后端服务
+1. `maybeEvictToCloud()` 在本地热存超过阈值时选取 LRU 候选。
+2. 迁移任务写入 Kafka。
+3. 消费端根据 `storage_type` 处理 local 或 scattered 对象。
+4. 迁移完成后更新 `file_stores` / `chunk_records`，并修正 Redis 用量计数器。
 
-User/File Service 只暴露 gRPC 端口，不暴露 HTTP。
+## Clean Architecture
 
-**原因**:
-- HTTP 统一由 Gateway 处理，避免多入口
-- gRPC 性能更优，适合服务间通信
-- Proto 定义即接口文档，强类型约束
+Kratos 服务内部仍保持 Service → Biz → Data 分层：
 
-### 2. Gin 作为 Gateway
+- Service：gRPC handler 和参数映射
+- Biz：上传、下载、恢复、迁移等核心规则
+- Data：GORM、Redis、OSS、Kafka、gRPC 客户端的具体实现
 
-选择 Gin 而非 Kratos HTTP 作为 API 网关。
+Gateway 不走 Kratos 四层，原因是它只做路由、中间件和协议转换，不承载业务状态。
 
-**原因**:
-- 网关职责是路由/中间件/代理，不需要 Kratos 的 Service/Biz/Data 分层
-- Gin 生态丰富，中间件成熟
-- Gateway 不处理业务逻辑，无需 Wire 依赖注入
+## 设计取舍
 
-### 3. Consul 服务发现
+### 为什么 File Service 同时暴露 gRPC 和 HTTP
 
-使用 Consul 作为注册中心，而非硬编码地址。
+- gRPC 给内部控制面调用：CheckUpload、CompleteUpload、GetDownloadPlan、文件管理
+- HTTP 给浏览器数据面直传和直下 chunk
+- 这样既保留了强类型 RPC，又避免浏览器被 gRPC 流式协议绑定
 
-**原因**:
-- 服务实例动态增减时自动发现
-- 支持健康检查
-- Kratos 原生支持 (`kratos.Registrar()`)
+### 为什么恢复链路走 OSS 而不是副本表
 
-### 4. 跨服务调用使用接口隔离
+- 主下载路径仍走实例直连，带宽效率最高
+- 故障恢复时只要任意一个健康实例还在，就可以从 OSS 恢复分片无状态重建 chunk
+- 不需要维护跨实例 chunk 副本一致性
 
-File Service 的 `biz.UserClient` 是接口，由 `data.userClientImpl` 通过 gRPC 实现。
+### 为什么网关还保留 recovery 代理
 
-**原因**:
-- Biz 层不依赖网络细节
-- 单元测试可 Mock UserClient
-- 未来可替换通信方式 (如 HTTP/MQ)
-
-### 5. Wire 依赖注入
-
-每个 Kratos 服务使用独立的 `wire.go` 配置依赖注入。
-
-**原因**:
-- 编译时检查依赖关系
-- 自动生成注入代码
-- 避免手动构造复杂依赖树
+- 失败才走 recovery，平时不消耗网关带宽
+- Gateway 已经持有 Consul 视角下的健康实例列表，适合挑选健康实例代理恢复请求
 
 ## 面试要点
 
-1. **为什么拆分微服务？** — 用户服务和文件服务有不同的扩展需求，文件服务 I/O 密集需要更多实例
-2. **为什么不用 HTTP 网关直接调 HTTP 后端？** — gRPC 比 HTTP/JSON 性能高 3-5 倍，强类型，双向流
-3. **服务发现解决什么问题？** — 服务实例动态变化时无需修改配置，负载均衡，故障摘除
-4. **Clean Architecture 的好处？** — 业务逻辑与基础设施解耦，可测试性强，技术选型可替换
-5. **Gateway 模式的优势？** — 统一入口，集中认证/限流，前端只需对接一个地址
+1. 为什么数据面绕过网关：上传和下载吞吐受网关带宽限制太明显，控制面与数据面必须拆开。
+2. 为什么还要 chunk_records：没有 chunk 级元数据，就无法做并发下载、实例切换和 chunk 迁移。
+3. 为什么恢复分片写 OSS：实例级故障后，本地磁盘不可达，恢复材料必须放在跨实例可用的位置。

@@ -98,22 +98,24 @@ frontend/src/
 **流程**:
 ```
 选择文件 → 计算 MD5 hash → 检查秒传(CheckUpload)
-  ├─ 可秒传 → 直接合并(MergeChunks) → 完成
+  ├─ 可秒传 → 直接创建逻辑文件记录 → 完成
   └─ 不可秒传 → 获取已上传分块列表
-       → 逐块上传(跳过已传) → 合并(MergeChunks) → 完成
+       → 获取 UploadPlan
+       → 逐块直传到 file-service HTTP (跳过已传)
+       → CompleteUpload 写入元数据 → 完成
 ```
 
 **实现要点**:
 - 分块大小 5MB (`CHUNK_SIZE = 5 * 1024 * 1024`)
 - 使用 `spark-md5` 分块计算 MD5
-- 分块通过 `multipart/form-data` 二进制上传（不做 Base64 编码）
+- 分块通过 `fetch PUT` 原始二进制直传 file-service HTTP 实例
 - 全局任务队列 (`tasks` ref)，支持多文件并行上传
-- 状态追踪: `pending → hashing → uploading → merging → done | error`
+- 状态追踪: `pending → hashing → uploading → completing → done | error`
 
 **面试要点**:
 - 为什么用 MD5? —— 这里用于秒传去重和完整性校验，速度比 SHA-256 更快
 - 为什么改成 FormData? —— 直接传二进制 chunk，避免 Base64 约 33% 膨胀和额外编码开销
-- 断点续传原理: 后端返回已上传分块索引列表，前端跳过这些分块
+- 断点续传原理: 后端返回已上传分块索引列表，前端只补发缺失 chunk
 
 ### 4. 认证状态 (`src/stores/auth.ts`)
 
@@ -203,10 +205,10 @@ frontend/src/
 | PUT | `renameFile()` | `/api/v1/file/rename` | Yes |
 | DELETE | `deleteFiles()` | `/api/v1/files` | Yes |
 | PUT | `moveFiles()` | `/api/v1/file/move` | Yes |
-| GET | `getDownloadURL()` | `/api/v1/file/download/:id` | Yes |
 | POST | `checkUpload()` | `/api/v1/file/check-upload` | Yes |
-| POST | `uploadChunk()` | `/api/v1/file/upload-chunk` | Yes |
-| POST | `mergeChunks()` | `/api/v1/file/merge-chunks` | Yes |
+| POST | `completeUpload()` | `/api/v1/file/complete-upload` | Yes |
+| GET | `getDownloadPlan()` | `/api/v1/file/download-plan/:id` | Yes |
+| GET | `getDownloadURL()` | `/api/v1/file/download/:id` | Yes |
 | GET | `listTrash()` | `/api/v1/trash` | Yes |
 | POST | `restoreFiles()` | `/api/v1/trash/restore` | Yes |
 | DELETE | `permanentDelete()` | `/api/v1/trash` | Yes |
@@ -224,6 +226,12 @@ frontend/src/
 | Stores | auth.ts, file.ts | Mock `@/api/*` 模块 |
 | Composables | useTheme.ts, useUpload.ts | Mock DOM API + `@/api/*` |
 | Router | index.ts (auth guard) | Mock `localStorage` |
+
+### 下载恢复补充
+
+- `getDownloadPlan()` 返回主下载地址和 `backupUrls`
+- `stores/file.ts` 与 `composables/useDownload.ts` 都会先请求主地址
+- 主地址失败后自动按顺序尝试 `backupUrls` 中的 recovery URL
 
 ### 运行测试
 

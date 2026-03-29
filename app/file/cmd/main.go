@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-kratos/kratos/contrib/registry/consul/v2"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-kratos/kratos/v2/config/file"
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-kratos/kratos/v2/transport"
 	kratosgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
 	consulapi "github.com/hashicorp/consul/api"
 	googlegrpc "google.golang.org/grpc"
@@ -19,6 +21,8 @@ import (
 	userv1 "github.com/J-Y-Zhang/light-cloud-disk/api/user/v1"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/biz"
 	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/conf"
+	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/data"
+	"github.com/J-Y-Zhang/light-cloud-disk/app/file/internal/server"
 )
 
 var (
@@ -32,13 +36,19 @@ func init() {
 	flag.StringVar(&flagconf, "conf", "../../app/file/configs", "config path, eg: -conf config.yaml")
 }
 
-func newApp(logger log.Logger, gs *kratosgrpc.Server, r *consul.Registry) *kratos.App {
+func newApp(logger log.Logger, gs *kratosgrpc.Server, r *consul.Registry, httpPort string, extras ...transport.Server) *kratos.App {
+	servers := []transport.Server{gs}
+	servers = append(servers, extras...)
+	meta := map[string]string{}
+	if httpPort != "" {
+		meta["http_port"] = httpPort
+	}
 	return kratos.New(
 		kratos.Name(Name),
 		kratos.Version(Version),
-		kratos.Metadata(map[string]string{}),
+		kratos.Metadata(meta),
 		kratos.Logger(logger),
-		kratos.Server(gs),
+		kratos.Server(servers...),
 		kratos.Registrar(r),
 	)
 }
@@ -114,6 +124,16 @@ func provideStoreDir(u *conf.Upload) string {
 	return "./store"
 }
 
+func provideTempDir(u *conf.Upload) string {
+	if dir := os.Getenv("FILE_TMP_DIR"); dir != "" {
+		return dir
+	}
+	if u != nil && u.TempDir != "" {
+		return u.TempDir
+	}
+	return "./tmp"
+}
+
 // provideErasureConfig reads erasure coding config from env vars.
 func provideErasureConfig() *biz.ErasureConfig {
 	cfg := &biz.ErasureConfig{DataShards: 4, ParityShards: 2, MinFileSize: 1 << 20}
@@ -164,12 +184,55 @@ func main() {
 	r := newRegistry()
 	userClient := newUserServiceClient(r)
 
-	app, cleanup, err := wireApp(bc.Server, bc.Data, bc.Upload, bc.Storage, logger, r, userClient)
+	grpcSrv, fileUsecase, cleanup, err := wireApp(bc.Server, bc.Data, bc.Upload, bc.Storage, logger, userClient)
 	if err != nil {
 		panic(err)
 	}
 	defer cleanup()
 
+	// Build chunk HTTP server outside Wire (needs env-based config)
+	httpAddr := os.Getenv("FILE_HTTP_ADDR")
+	if httpAddr == "" {
+		httpAddr = ":9003"
+	}
+	jwtSecret := os.Getenv("JWT_SECRET")
+	tmpDir := provideTempDir(bc.Upload)
+	if os.Getenv("FILE_TMP_DIR") == "" {
+		_ = os.Setenv("FILE_TMP_DIR", tmpDir)
+	}
+	chunkHTTP := server.NewChunkHTTPServer(fileUsecase, httpAddr, jwtSecret, tmpDir, logger)
+
+	// Extract HTTP port for Consul metadata so the gateway can build upload plans.
+	httpPort := ""
+	if httpAddr != "" {
+		if _, p, ok := strings.Cut(httpAddr, ":"); ok && p != "" {
+			httpPort = p
+		}
+	}
+
+	// Optionally start Kafka consumer alongside the producer.
+	extras := []transport.Server{chunkHTTP}
+	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
+		cloudMigrateTopic := "cloud-migrate"
+		thumbnailTopic := "file-thumbnail"
+		if bc.Kafka != nil {
+			if bc.Kafka.CloudMigrateTopic != "" {
+				cloudMigrateTopic = bc.Kafka.CloudMigrateTopic
+			}
+			if bc.Kafka.ThumbnailTopic != "" {
+				thumbnailTopic = bc.Kafka.ThumbnailTopic
+			}
+		}
+		consumer := data.NewKafkaConsumer(
+			strings.Split(brokers, ","),
+			cloudMigrateTopic, thumbnailTopic,
+			fileUsecase.Repo(), fileUsecase.CloudStore(), tmpDir,
+			logger,
+		)
+		extras = append(extras, consumer)
+	}
+
+	app := newApp(logger, grpcSrv, r, httpPort, extras...)
 	if err := app.Run(); err != nil {
 		panic(err)
 	}

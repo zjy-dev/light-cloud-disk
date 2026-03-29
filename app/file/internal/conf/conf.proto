@@ -10,6 +10,13 @@ message Bootstrap {
   Data data = 2;
   Upload upload = 3;
   Storage storage = 4;
+  Kafka kafka = 5;
+}
+
+message Kafka {
+  repeated string brokers = 1;
+  string cloud_migrate_topic = 2;
+  string thumbnail_topic = 3;
 }
 
 message Server {

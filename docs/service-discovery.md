@@ -2,170 +2,61 @@
 
 ## 概述
 
-本项目使用 Consul 作为服务注册与发现中心，所有服务间的 gRPC 通信通过 Consul 进行地址解析。
+系统所有内部服务发现都通过 Consul 完成。除了常规 gRPC 地址，file-service 还会把 HTTP 端口作为元数据注册到 Consul，供 Gateway 生成 UploadPlan 和 recovery 代理使用。
 
-## 服务注册
+## 注册内容
 
-### 注册流程
+| 服务 | Consul 名称 | 主端口 | 元数据 |
+|------|-------------|--------|--------|
+| User Service | `user-service` | 9001/gRPC | 无 |
+| File Service | `file-service` | 9002/gRPC | `http_port=9003` |
 
-```
-服务启动 → 连接 Consul → 注册服务名+地址+端口 → 定期心跳 → 服务停止时注销
-```
+这意味着 Gateway 拿到的不只是 gRPC 连接地址，还能把 gRPC 地址映射到相应的 file-service HTTP 地址。
 
-### Kratos 服务注册 (User/File Service)
+## 发现链路
 
-Kratos 通过 `kratos.Registrar()` 选项自动完成服务注册和注销：
+### Gateway
 
-```go
-// app/user/cmd/main.go
-import (
-    "github.com/go-kratos/kratos/contrib/registry/consul/v2"
-    consulapi "github.com/hashicorp/consul/api"
-)
+Gateway 启动时会：
 
-func main() {
-    // 1. Create Consul client
-    consulCli, _ := consulapi.NewClient(&consulapi.Config{
-        Address: os.Getenv("CONSUL_ADDR"), // e.g. "localhost:8500"
-    })
-    // 2. Create Kratos registrar
-    r := consul.New(consulCli)
-    // 3. Start Kratos app and register automatically
-    app := kratos.New(
-        kratos.Name("user-service"),
-        kratos.Server(grpcSrv),
-        kratos.Registrar(r),
-    )
-    app.Run() // 注册到 Consul
-    // app.Stop() automatically deregisters service
-}
-```
+1. 用 `discovery:///user-service` 建立 User Service gRPC 客户端
+2. 用 `discovery:///file-service` 建立 File Service gRPC 客户端
+3. 额外维护一个 Consul 哈希环，用于：
+   - `pick(key)`: 控制面 gRPC 路由
+   - `pickN(key, n)`: 生成 UploadPlan 的多个 HTTP 地址
+   - `MarkUnhealthy(addr)`: 对失败实例执行 15 秒冷却剔除
 
-### 注册信息
+### File Service
 
-| 服务 | Consul 名称 | 端口 | 协议 |
-|------|-------------|------|------|
-| 用户服务 | user-service | 9001 | gRPC |
-| 文件服务 | file-service | 9002 | gRPC |
+File Service 通过相同的 `discovery:///user-service` 机制发现 User Service，调用 `UpdateStorageUsed`。
 
-## 服务发现
-
-### 发现流程
+## 当前通信拓扑
 
 ```
-客户端需要调用目标服务 → 通过 Consul 查找服务实例 → 获取地址列表 → 选择一个实例 → 建立 gRPC 连接
+Gateway ──gRPC──▶ user-service
+Gateway ──gRPC──▶ file-service
+File Service ──gRPC──▶ user-service
+
+Gateway ──HTTP address metadata──▶ file-service HTTP :9003
+Client  ──HTTP direct upload/download──▶ file-service HTTP :9003
 ```
 
-### Gateway 发现后端服务
+## 为什么要把 HTTP 端口也放进 Consul
 
-```go
-// app/gateway/internal/client/client.go
-import (
-    kratosgrpc "github.com/go-kratos/kratos/v2/transport/grpc"
-    "github.com/go-kratos/kratos/contrib/registry/consul/v2"
-)
+file-service 的主业务是“gRPC 控制面 + HTTP 数据面”。如果只注册 gRPC 端口，Gateway 无法生成 chunk 直传地址，也无法在 recovery 代理时选择一个健康实例去重建 chunk。
 
-func NewServiceClients() *ServiceClients {
-    consulCli, _ := consulapi.NewClient(&consulapi.Config{
-        Address: os.Getenv("CONSUL_ADDR"),
-    })
-    r := consul.New(consulCli)
+## 健康状态与冷却
 
-    // Use discovery:/// endpoint scheme
-    userConn, _ := kratosgrpc.DialInsecure(ctx,
-        kratosgrpc.WithEndpoint("discovery:///user-service"),
-        kratosgrpc.WithDiscovery(r),
-    )
-    userClient := userv1.NewUserServiceClient(userConn)
-    // ...
-}
-```
+Gateway 的哈希环除了依赖 Consul 健康检查，还会对运行时失败做本地冷却：
 
-### File Service 发现 User Service
+- 冷却时长：15 秒
+- 触发时机：直连请求或 recovery 代理命中失败实例
+- 恢复方式：冷却过期后自动重试；Consul 刷新时也会清理过期状态
 
-File Service 通过相同模式发现 User Service，调用 `UpdateStorageUsed` RPC：
-
-```go
-// app/file/cmd/main.go
-// Discover user-service and create gRPC connection
-userConn, _ := kratosgrpc.DialInsecure(ctx,
-    kratosgrpc.WithEndpoint("discovery:///user-service"),
-    kratosgrpc.WithDiscovery(r),
-)
-userServiceClient := userv1.NewUserServiceClient(userConn)
-// Pass into File Service Wire dependency injection
-```
-
-## 通信拓扑
-
-```
-                    Consul (注册中心)
-                   ╱       │       ╲
-              注册╱        │注册     ╲注册
-              ╱            │          ╲
-    User Service    File Service    Gateway
-    (user-service)  (file-service)
-         ▲               │              │
-         │    gRPC       │              │
-         └───(发现)───────┘              │
-         ▲                              │
-         │          gRPC                │
-         └──────────(发现)───────────────┘
-                                        │
-                                  gRPC  │
-         File Service ◄─────(发现)──────┘
-```
-
-### 调用关系
-
-| 调用方 | 被调用方 | 方法 | 场景 |
-|--------|----------|------|------|
-| Gateway | User Service | Register, Login, GetUserInfo, UpdateUserInfo | 所有用户操作 |
-| Gateway | File Service | 所有文件操作 RPC | 所有文件操作 |
-| File Service | User Service | UpdateStorageUsed | 文件合并完成后更新存储用量 |
-
-## 容错处理
-
-### 服务不可用
-
-File Service 调用 User Service 更新存储用量时，如果 User Service 不可用，仅打印警告日志，不影响文件合并操作：
-
-```go
-// app/file/internal/biz/file.go
-func (uc *FileUsecase) MergeChunks(...) error {
-    // ... file merge logic
-    
-    // Update storage usage with fault tolerance
-    if err := uc.userClient.UpdateStorageUsed(ctx, userID, fileSize); err != nil {
-        uc.log.Warnf("failed to update storage used for user %d: %v", userID, err)
-        // Do not return error because file merge already succeeded
-    }
-    return nil
-}
-```
-
-### 健康检查
-
-- Consul 定期检查服务健康状态
-- 不健康的实例自动从服务列表中移除
-- Gateway 通过 Consul 只连接健康实例
-
-## 配置
-
-所有服务通过环境变量 `CONSUL_ADDR` 配置 Consul 地址：
-
-```yaml
-# Local development
-CONSUL_ADDR=localhost:8500
-
-# Inside Docker Compose
-CONSUL_ADDR=consul:8500
-```
+这样既能响应瞬时故障，也不会永久拉黑实例。
 
 ## 面试要点
 
-1. **为什么用 Consul 而不是 Eureka/Nacos？** — Consul 支持多数据中心，Go 生态原生支持，Kratos 有官方 contrib
-2. **服务发现 vs 硬编码地址？** — 动态扩缩容、故障自动摘除、无需修改配置
-3. **`discovery:///` 协议是什么？** — Kratos gRPC 客户端的自定义 resolver，触发 Consul 查询解析服务地址
-4. **如果 Consul 挂了？** — 已建立的连接不受影响，新连接无法解析；生产环境 Consul 应部署集群 (3-5 节点)
-5. **跨服务调用失败怎么办？** — 关键路径返回错误，非关键路径 (如更新统计) 降级处理仅告警
+1. 为什么不只靠 gRPC discovery：上传和下载的数据面是 HTTP，必须把 HTTP 地址也纳入服务发现结果。
+2. 为什么还要本地 unhealthy 冷却：Consul 的健康状态刷新有间隔，运行时失败需要更快的本地避让。
+3. 为什么 pick 和 pickN 都要有：前者保证控制请求稳定命中，后者负责为 chunk 生成多实例上传计划。

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,9 +19,10 @@ import (
 
 // Storage type constants
 const (
-	StorageLocal   = "local"    // files kept on local disk
-	StorageLocalEC = "local_ec" // files stored with erasure coding shards on local disk
-	StorageOSS     = "oss"      // cold-tier files in Alibaba Cloud OSS
+	StorageLocal     = "local"     // files kept on local disk
+	StorageLocalEC   = "local_ec"  // files stored with erasure coding shards on local disk
+	StorageOSS       = "oss"       // cold-tier files in Alibaba Cloud OSS
+	StorageScattered = "scattered" // chunks distributed across multiple instances
 )
 
 var (
@@ -59,8 +61,9 @@ type FileStore struct {
 	FileMD5        string
 	Size           int64
 	StorePath      string
-	StorageType    string // "local", "local_ec", or "oss"
+	StorageType    string // "local", "local_ec", "oss", or "scattered"
 	UploadStatus   string // "uploading" or "completed"
+	TotalChunks    int32  // total number of chunks for scattered storage
 	RefCount       int32
 	LastAccessedAt time.Time
 	CreatedAt      time.Time
@@ -91,6 +94,53 @@ type ChunkInfo struct {
 	ChunkIndex int32
 	ChunkSize  int64
 	Uploaded   bool
+}
+
+// ChunkRecord represents a chunk stored on a specific file-service instance.
+type ChunkRecord struct {
+	ID          int64
+	FileMD5     string
+	FileSize    int64
+	ChunkIndex  int32
+	ChunkSize   int64
+	InstanceID  string // host:port of the file-service instance
+	StorePath   string
+	Checksum    string
+	StorageType string // "local" or "oss"
+	CreatedAt   time.Time
+}
+
+// UploadPlan describes how a file's chunks should be distributed across instances.
+type UploadPlan struct {
+	FileMD5     string
+	FileSize    int64
+	TotalChunks int32
+	ChunkSize   int64
+	Assignments []ChunkAssignment
+}
+
+// ChunkAssignment assigns a single chunk to a target file-service instance.
+type ChunkAssignment struct {
+	ChunkIndex int32
+	TargetAddr string // file-service HTTP address (host:port)
+	UploadURL  string // full URL: http://{addr}/api/v1/chunks/{md5}/{index}
+}
+
+// DownloadPlan describes where to get each chunk for parallel download.
+type DownloadPlan struct {
+	FileName    string
+	FileMD5     string
+	FileSize    int64
+	TotalChunks int32
+	Chunks      []ChunkLocation
+}
+
+// ChunkLocation describes where to download a single chunk.
+type ChunkLocation struct {
+	ChunkIndex  int32
+	ChunkSize   int64
+	DownloadURL string
+	Checksum    string
 }
 
 // UploadSession persists a presigned multipart upload session for cross-device resume.
@@ -179,8 +229,15 @@ type FileRepo interface {
 	CountUploadedChunks(ctx context.Context, fileMD5 string) (int32, error)
 	GetUploadedChunks(ctx context.Context, fileMD5 string) ([]int32, error)
 	SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error
-	MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error)
 	ClearChunkInfo(ctx context.Context, fileMD5 string) error
+
+	// ChunkRecord operations (scattered storage metadata)
+	CreateChunkRecord(ctx context.Context, record *ChunkRecord) error
+	FindChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) ([]*ChunkRecord, error)
+	FindChunkRecordByIndex(ctx context.Context, fileMD5 string, fileSize int64, index int32) (*ChunkRecord, error)
+	CountChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) (int32, error)
+	DeleteChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) error
+	UpdateChunkStorageLocation(ctx context.Context, id int64, storageType, newPath string) error
 
 	// Disk usage operations (Redis atomic counters)
 	GetDiskUsage(ctx context.Context, diskType string) (int64, error)
@@ -293,6 +350,12 @@ func NewFileUsecase(
 	}
 }
 
+// Repo returns the file repository for use by infrastructure code (e.g. Kafka consumer).
+func (uc *FileUsecase) Repo() FileRepo { return uc.repo }
+
+// CloudStore returns the cloud storage client for use by infrastructure code.
+func (uc *FileUsecase) CloudStore() CloudStorage { return uc.cloudStore }
+
 // CheckUpload verifies instant/resumable upload and primary-storage disk availability.
 // Returns: canFastUpload, uploadedChunks, diskFull, uploadMode, uploadStatus, error
 // uploadMode is "direct" (chunks through backend) or "presigned" (client uploads to OSS directly).
@@ -359,8 +422,10 @@ func (uc *FileUsecase) SaveChunk(ctx context.Context, fileMD5 string, chunkIndex
 	return uc.repo.AddUploadedChunk(ctx, fileMD5, chunkIndex)
 }
 
-// MergeChunks merges chunks, uploads to the appropriate storage, and cleans temp files.
-func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalChunks int32) (*File, error) {
+// CompleteUpload finalises a scattered upload after all chunks are stored on their
+// respective file-service instances. It verifies chunk completeness, creates the
+// FileStore and File records, and updates user storage usage.
+func (uc *FileUsecase) CompleteUpload(ctx context.Context, userID, parentID int64, fileName, fileMD5 string, fileSize int64, totalChunks int32) (*File, error) {
 	// 1) Re-check deduplication to reuse existing storage
 	store, _ := uc.repo.FindStoreByMD5(ctx, fileMD5)
 	if store != nil && store.UploadStatus == "completed" {
@@ -395,7 +460,7 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		_ = uc.repo.ReleaseMergeLock(ctx, fileMD5)
 	}()
 
-	// 3) Re-check dedup after acquiring lock (another instance may have completed)
+	// 3) Re-check dedup after acquiring lock
 	store, _ = uc.repo.FindStoreByMD5AndStatus(ctx, fileMD5, "completed")
 	if store != nil {
 		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
@@ -417,7 +482,16 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return createdFile, nil
 	}
 
-	// 4) Create store with uploading status (MySQL UNIQUE constraint handles races)
+	// 4) Verify all chunk records are present
+	recordCount, err := uc.repo.CountChunkRecords(ctx, fileMD5, fileSize)
+	if err != nil {
+		return nil, fmt.Errorf("count chunk records: %w", err)
+	}
+	if recordCount < totalChunks {
+		return nil, fmt.Errorf("incomplete chunks: have %d of %d chunk records", recordCount, totalChunks)
+	}
+
+	// 5) Create store record with scattered storage type
 	ext := filepath.Ext(fileName)
 	if ext == "" {
 		ext = ".bin"
@@ -428,15 +502,16 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		FileMD5:      fileMD5,
 		Size:         fileSize,
 		StorePath:    objectKey,
-		StorageType:  StorageLocal,
+		StorageType:  StorageScattered,
 		UploadStatus: "uploading",
+		TotalChunks:  totalChunks,
 		RefCount:     1,
 	})
 	if err != nil {
 		return nil, err
 	}
-	// UNIQUE constraint race: another instance may have created & completed it
-	if createdStore.UploadStatus == "completed" || createdStore.UploadStatus == "done" {
+	// UNIQUE constraint race: another instance may have completed it
+	if createdStore.UploadStatus == "completed" {
 		if err := uc.repo.IncrStoreRefCount(ctx, fileMD5); err != nil {
 			return nil, err
 		}
@@ -456,51 +531,21 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		return createdFile, nil
 	}
 
-	// 5) Verify all chunks are present locally (cross-instance failover guard)
-	uploaded, _ := uc.repo.CountUploadedChunks(ctx, fileMD5)
-	if uploaded < totalChunks {
-		return nil, fmt.Errorf("incomplete chunks: have %d of %d — retry after chunks are re-uploaded to this instance", uploaded, totalChunks)
-	}
-
-	// 6) Merge chunks into a local file
-	mergedPath, err := uc.repo.MergeChunkData(ctx, fileMD5, fileName, totalChunks)
-	if err != nil {
-		return nil, err
-	}
-
-	// 7) Choose storage target: local disk, OSS fallback if disk full
-	storageType, storePath := uc.uploadMergedFile(ctx, mergedPath, objectKey, fileSize)
-
-	// 8) Remove local merged file only if uploaded to remote storage
-	if storageType != StorageLocal {
-		_ = os.Remove(mergedPath)
-		_ = uc.repo.IncrDiskUsage(ctx, "local", -fileSize)
-	}
-
-	// 8.5) Apply erasure coding to local files above size threshold
-	if storageType == StorageLocal {
-		localPath := filepath.Join(uc.storeDir, objectKey)
-		if uc.encodeWithErasure(ctx, localPath, fileMD5, fileSize, createdStore.ID) {
-			storageType = StorageLocalEC
-		}
-	}
-
-	// 9) Update store status to completed with final storage info
-	_ = uc.repo.UpdateStorageLocation(ctx, fileMD5, storageType, storePath)
+	// 6) Mark store as completed
 	_ = uc.repo.UpdateStoreStatus(ctx, createdStore.ID, "completed")
 
-	// 10) Create files record
+	// 7) Create files record
 	file := &File{
 		UserID: userID, ParentID: parentID, Name: fileName,
 		FileMD5: fileMD5, Size: fileSize, IsFolder: false,
-		Path: storePath,
+		Path: objectKey,
 	}
 	createdFile, err := uc.repo.Create(ctx, file)
 	if err != nil {
 		return nil, err
 	}
 
-	// 11) Cleanup
+	// 8) Cleanup Redis chunk tracking
 	if err := uc.repo.ClearChunkInfo(ctx, fileMD5); err != nil {
 		uc.log.Warnf("Could not clear chunk metadata for %s: %v", fileMD5, err)
 	}
@@ -508,64 +553,201 @@ func (uc *FileUsecase) MergeChunks(ctx context.Context, userID, parentID int64, 
 		uc.log.Warnf("Could not update storage usage for user %d: %v", userID, err)
 	}
 
-	// 12) Check primary storage threshold and trigger LRU eviction if needed
+	// 9) Check primary storage threshold and trigger LRU eviction if needed
 	primUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
 	uc.maybeEvictToCloud(ctx, primUsed)
-
-	// 13) Send async thumbnail task for media files
-	if uc.mq != nil && isMediaFile(fileName) {
-		thumbMsg := &ThumbnailMessage{
-			FileID:   createdFile.ID,
-			FilePath: storePath,
-			FileType: detectMIME(fileName),
-		}
-		if err := uc.mq.SendThumbnailMessage(ctx, thumbMsg); err != nil {
-			uc.log.Warnf("Could not enqueue thumbnail task for file %d: %v", createdFile.ID, err)
-		}
-	}
 
 	return createdFile, nil
 }
 
-// uploadMergedFile puts the merged file into the appropriate storage backend,
-// falling back to OSS when the local disk is full.
-func (uc *FileUsecase) uploadMergedFile(ctx context.Context, mergedPath, objectKey string, fileSize int64) (storageType, storePath string) {
-	storePath = objectKey
-
-	// Local disk is primary, OSS is fallback
-	primUsed, _ := uc.repo.GetDiskUsage(ctx, "local")
-	if primUsed+fileSize <= uc.storageCfg.PrimaryMaxBytes {
-		// Keep file on local disk — copy/link to storeDir if not already there
-		dest := filepath.Join(uc.storeDir, objectKey)
-		if dest != mergedPath {
-			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err == nil {
-				// Try hard link first (cheap), fall back to copy
-				if err := os.Link(mergedPath, dest); err != nil {
-					uc.copyFile(mergedPath, dest)
-				}
-			}
-		}
-		_ = uc.repo.IncrDiskUsage(ctx, "local", fileSize)
-		return StorageLocal, storePath
-	}
-	// Local disk full at merge time, upload to OSS directly
-	return uc.uploadToOSS(ctx, mergedPath, objectKey, fileSize, storePath)
+// CreateChunkRecord delegates to the repo to create a chunk record.
+func (uc *FileUsecase) CreateChunkRecord(ctx context.Context, rec *ChunkRecord) error {
+	return uc.repo.CreateChunkRecord(ctx, rec)
 }
 
-// uploadToOSS uploads the merged file to cloud (OSS) storage.
-// Returns StorageOSS on success, or ("", "") and logs error on failure.
-func (uc *FileUsecase) uploadToOSS(ctx context.Context, mergedPath, objectKey string, fileSize int64, storePath string) (string, string) {
-	localFile, err := os.Open(mergedPath)
+// PrepareChunkRecovery encodes a chunk into erasure shards and stores them in
+// OSS so healthy instances can reconstruct the chunk when the primary node is
+// unavailable.
+func (uc *FileUsecase) PrepareChunkRecovery(ctx context.Context, fileMD5 string, chunkIndex int32, chunkPath string) error {
+	if uc.erasureEnc == nil {
+		return nil
+	}
+	if info, err := os.Stat(chunkPath); err == nil && info.Size() < uc.erasureCfg.MinFileSize {
+		return nil
+	}
+
+	workDir, err := os.MkdirTemp("", fmt.Sprintf("chunk-ec-%s-%06d-", fileMD5, chunkIndex))
 	if err != nil {
-		uc.log.Errorf("uploadToOSS: failed to open %s: %v", mergedPath, err)
-		return StorageLocal, storePath // keep local as fallback
+		return fmt.Errorf("create chunk recovery temp dir: %w", err)
 	}
-	defer localFile.Close()
-	if err := uc.cloudStore.Put(ctx, objectKey, localFile, fileSize); err != nil {
-		uc.log.Errorf("uploadToOSS: failed to upload %s: %v", objectKey, err)
-		return StorageLocal, storePath // keep local as fallback
+	defer os.RemoveAll(workDir)
+
+	baseName := chunkRecoveryShardBaseName(fileMD5, chunkIndex)
+	shardPaths, err := uc.erasureEnc.Encode(chunkPath, workDir, baseName, uc.erasureCfg.DataShards, uc.erasureCfg.ParityShards)
+	if err != nil {
+		return fmt.Errorf("encode chunk recovery shards: %w", err)
 	}
-	return StorageOSS, storePath
+
+	for shardIndex, shardPath := range shardPaths {
+		file, err := os.Open(shardPath)
+		if err != nil {
+			return fmt.Errorf("open chunk recovery shard: %w", err)
+		}
+
+		info, statErr := file.Stat()
+		if statErr != nil {
+			file.Close()
+			return fmt.Errorf("stat chunk recovery shard: %w", statErr)
+		}
+
+		key := chunkRecoveryShardObjectKey(fileMD5, chunkIndex, shardIndex)
+		putErr := uc.cloudStore.Put(ctx, key, file, info.Size())
+		closeErr := file.Close()
+		if putErr != nil {
+			return fmt.Errorf("upload chunk recovery shard: %w", putErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close chunk recovery shard: %w", closeErr)
+		}
+	}
+
+	return nil
+}
+
+// RecoverChunk rebuilds a chunk from its recovery shards stored in OSS.
+func (uc *FileUsecase) RecoverChunk(ctx context.Context, fileMD5 string, fileSize int64, chunkIndex int32) ([]byte, int64, error) {
+	if uc.erasureEnc == nil {
+		return nil, 0, errors.New("chunk recovery is not configured")
+	}
+
+	record, err := uc.repo.FindChunkRecordByIndex(ctx, fileMD5, fileSize, chunkIndex)
+	if err != nil {
+		return nil, 0, fmt.Errorf("find chunk record: %w", err)
+	}
+
+	workDir, err := os.MkdirTemp("", fmt.Sprintf("chunk-recover-%s-%06d-", fileMD5, chunkIndex))
+	if err != nil {
+		return nil, 0, fmt.Errorf("create recovery temp dir: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
+	totalShards := uc.erasureCfg.DataShards + uc.erasureCfg.ParityShards
+	shardPaths := make([]string, totalShards)
+	for shardIndex := 0; shardIndex < totalShards; shardIndex++ {
+		key := chunkRecoveryShardObjectKey(fileMD5, chunkIndex, shardIndex)
+		reader, getErr := uc.cloudStore.Get(ctx, key)
+		if getErr != nil {
+			continue
+		}
+
+		localPath := filepath.Join(workDir, fmt.Sprintf("shard-%d", shardIndex))
+		file, createErr := os.Create(localPath)
+		if createErr != nil {
+			reader.Close()
+			return nil, 0, fmt.Errorf("create local recovery shard: %w", createErr)
+		}
+
+		_, copyErr := io.Copy(file, reader)
+		closeReaderErr := reader.Close()
+		closeFileErr := file.Close()
+		if copyErr != nil {
+			return nil, 0, fmt.Errorf("copy recovery shard: %w", copyErr)
+		}
+		if closeReaderErr != nil {
+			return nil, 0, fmt.Errorf("close recovery shard reader: %w", closeReaderErr)
+		}
+		if closeFileErr != nil {
+			return nil, 0, fmt.Errorf("close local recovery shard: %w", closeFileErr)
+		}
+
+		shardPaths[shardIndex] = localPath
+	}
+
+	data, err := uc.erasureEnc.Reconstruct(shardPaths, uc.erasureCfg.DataShards, uc.erasureCfg.ParityShards)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reconstruct chunk from recovery shards: %w", err)
+	}
+	if int64(len(data)) > record.ChunkSize {
+		data = data[:record.ChunkSize]
+	}
+
+	return data, record.ChunkSize, nil
+}
+
+// GetDownloadPlan returns per-chunk download URLs for parallel client-side download.
+func (uc *FileUsecase) GetDownloadPlan(ctx context.Context, userID, fileID int64) (*DownloadPlan, error) {
+	file, err := uc.repo.FindByID(ctx, fileID)
+	if err != nil {
+		return nil, ErrFileNotFound
+	}
+	if file.UserID != userID {
+		return nil, ErrFileNotFound
+	}
+
+	store, err := uc.repo.FindStoreByMD5(ctx, file.FileMD5)
+	if err != nil {
+		return nil, fmt.Errorf("file store not found: %w", err)
+	}
+
+	records, err := uc.repo.FindChunkRecords(ctx, file.FileMD5, file.Size)
+	if err != nil {
+		return nil, fmt.Errorf("load chunk records: %w", err)
+	}
+	if len(records) > 0 {
+		chunks := make([]ChunkLocation, len(records))
+		for i, r := range records {
+			downloadURL := fmt.Sprintf("http://%s/api/v1/chunks/%s/%d", r.InstanceID, r.FileMD5, r.ChunkIndex)
+			if r.StorageType == StorageOSS {
+				downloadURL, err = uc.cloudStore.PresignGetURL(ctx, r.StorePath, time.Hour)
+				if err != nil {
+					return nil, fmt.Errorf("presign chunk URL: %w", err)
+				}
+			}
+			chunks[i] = ChunkLocation{
+				ChunkIndex:  r.ChunkIndex,
+				ChunkSize:   r.ChunkSize,
+				DownloadURL: downloadURL,
+				Checksum:    r.Checksum,
+			}
+		}
+
+		return &DownloadPlan{
+			FileName:    file.Name,
+			FileMD5:     file.FileMD5,
+			FileSize:    file.Size,
+			TotalChunks: int32(len(records)),
+			Chunks:      chunks,
+		}, nil
+	}
+
+	// For OSS files: return a single presigned URL
+	if store.StorageType == StorageOSS {
+		url, err := uc.cloudStore.PresignGetURL(ctx, store.StorePath, 1*time.Hour)
+		if err != nil {
+			return nil, fmt.Errorf("presign OSS URL: %w", err)
+		}
+		return &DownloadPlan{
+			FileName:    file.Name,
+			FileMD5:     file.FileMD5,
+			FileSize:    file.Size,
+			TotalChunks: 1,
+			Chunks: []ChunkLocation{{
+				ChunkIndex:  0,
+				ChunkSize:   file.Size,
+				DownloadURL: url,
+			}},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no chunk records found for file %s", file.FileMD5)
+}
+
+func chunkRecoveryShardBaseName(fileMD5 string, chunkIndex int32) string {
+	return fmt.Sprintf("%s.chunk.%06d", fileMD5, chunkIndex)
+}
+
+func chunkRecoveryShardObjectKey(fileMD5 string, chunkIndex int32, shardIndex int) string {
+	return fmt.Sprintf("recovery/%s/%06d/shard-%d.rs", fileMD5, chunkIndex, shardIndex)
 }
 
 // copyFile copies src to dst by reading and writing.
@@ -931,11 +1113,18 @@ func (uc *FileUsecase) maybeEvictToCloud(ctx context.Context, currentUsed int64)
 	target := threshold * int64(evictPct) / 100
 	toFree := currentUsed - target
 
-	stores, err := uc.repo.FindLRUStores(ctx, StorageLocal, 100)
-	if err != nil {
-		uc.log.Warnf("Could not load LRU candidates for eviction: %v", err)
-		return
+	stores := make([]*FileStore, 0, 200)
+	for _, storageType := range []string{StorageLocal, StorageScattered} {
+		candidates, err := uc.repo.FindLRUStores(ctx, storageType, 100)
+		if err != nil {
+			uc.log.Warnf("Could not load LRU candidates for %s eviction: %v", storageType, err)
+			continue
+		}
+		stores = append(stores, candidates...)
 	}
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].LastAccessedAt.Before(stores[j].LastAccessedAt)
+	})
 
 	var freed int64
 	for _, s := range stores {

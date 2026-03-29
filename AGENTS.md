@@ -34,18 +34,24 @@
 
     Client (HTTP)
          │
-         ▼
-┌─────────────────────────────────┐
-│       Gin API Gateway           │
-│  (HTTP :8080, JWT, CORS, Hash) │
-└────────┬───────────────┬────────┘
-    gRPC │               │ gRPC
-         ▼               ▼
-┌────────────────┐ ┌────────────────┐
-│  User Service  │ │  File Service  │
+         ├─── CheckUpload ──────────────────────────────────┐
+         │                                                   │
+         │ (返回 UploadPlan: 分块→实例映射)                    │
+         │                                                   │
+         ├─── PUT chunks 直传 ──► File Service HTTP :9003 ×N │
+         │                                                   │
+         ▼                                                   │
+┌─────────────────────────────────┐                          │
+│       Gin API Gateway           │                          │
+│  (HTTP :8080, JWT, CORS, Hash) │                          │
+└────────┬───────────────┬────────┘                          │
+    gRPC │               │ gRPC                              │
+         ▼               ▼                                   │
+┌────────────────┐ ┌────────────────┐                        │
+│  User Service  │ │  File Service  │◄───────────────────────┘
 │  (gRPC :9001)  │◄│  (gRPC :9002)  │
-│  Kratos v2     │ │  Kratos v2     │
-│  MySQL/SQLite  │ │  MySQL/SQLite  │
+│  Kratos v2     │ │  (HTTP :9003)  │
+│  MySQL/SQLite  │ │  Kratos v2     │
 └───────┬────────┘ └──┬────┬───┬───┘
         │             │    │   │
         ▼             ▼    ▼   ▼
@@ -55,7 +61,8 @@
 
     ← ─ ─ Consul 服务发现 ─ ─ →
 
-    File Service ──→ goroutine MQ ──→ 阿里云 OSS
+    File Service ──→ Kafka MQ ──→ 阿里云 OSS
+    (无 Kafka 时降级为 goroutine channel)
 ```
 
 每个 Kratos 服务内部采用 Clean Architecture 分层:
@@ -160,7 +167,7 @@ app/
 │       ├── biz/
 │       │   ├── biz.go
 │       │   ├── file.go          # FileUsecase + FileRepo/UserClient/MessageProducer/ErasureEncoder 接口
-│       │   └── file_test.go     # 51 个单元测试
+│       │   └── file_test.go     # 59 个单元测试
 │       ├── data/
 │       │   ├── data.go          # GORM (MySQL/SQLite) + Redis 初始化
 │       │   ├── file.go          # FileRepo 实现 (GORM + Redis + 分布式锁)
@@ -248,7 +255,8 @@ frontend/
 ### 文件服务 (app/file/internal/biz/file.go)
 - [x] CheckUpload - 秒传/断点续传检查 + 上传模式选择 (direct/presigned)
 - [x] SaveChunk - 保存分块 (本地磁盘 + Redis 分布式锁 + 用量计数)
-- [x] MergeChunks - 合并分块 → 本地磁盘 + 纠删码编码 → UserClient.UpdateStorageUsed → 异步 LRU 淘汰
+- [x] CompleteUpload - 完成上传 (验证分块完整性 + 创建文件记录 + 打散存储 + UserClient.UpdateStorageUsed + 异步 LRU 淘汰)
+- [x] GetDownloadPlan - 获取下载计划 (返回各分块所在实例地址，支持并发下载)
 - [x] InitPresignedUpload - 初始化预签名上传 (秒传检查 + 会话创建/续传 + OSS InitMultipartUpload + 签发 URL)
 - [x] ReportUploadedPart - 上报已上传分块 (写 upload_parts 表)
 - [x] CompletePresignedUpload - 完成预签名上传 (OSS CompleteMultipartUpload + 创建文件记录)
@@ -283,15 +291,16 @@ frontend/
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 51 | Mock FileRepo + UserClient + MessageProducer + CloudStorage + ErasureEncoder |
+| app/file/internal/biz | 单元测试 | 59 | Mock FileRepo + UserClient + MessageProducer + CloudStorage + ErasureEncoder |
 | app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS 中间件 |
+| app/gateway/internal/client | 单元测试 | 7 | 一致性哈希 + 容错 |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag: integration) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag: integration) |
 
 运行测试:
 ```bash
-go test ./...                              # 全部单元测试 (79 个)
+go test ./...                              # 全部单元测试 (104 个)
 go test -tags=integration ./...            # 包含集成测试 (需要基础设施)
 ```
 
@@ -300,16 +309,19 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 - **Gateway → User Service**: 通过 Consul 发现 `user-service`，gRPC 调用
 - **Gateway → File Service**: 通过 Consul 发现 `file-service`，gRPC 调用
 - **File Service → User Service**: 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` RPC
-- **File Service → MQ**: MergeChunks 完成后异步 `maybeEvictToCloud()` → goroutine channel
+- **File Service → Kafka MQ**: CompleteUpload 完成后异步 `maybeEvictToCloud()` → Kafka（开发环境未配置时降级 goroutine channel）
+- **Client → File Service HTTP**: 分块直传 File Service 实例 (HTTP :9003)，绕过网关
+- **Gateway → File Service HTTP (recovery)**: 主分块实例失败时，网关把 recovery 请求代理到健康实例，由后者从 OSS 恢复分片重建 chunk
 
-## MQ 集成 (goroutine)
+## MQ 集成 (Kafka / goroutine 降级)
 
-**goroutine MQ**: 进程内 buffered channel (256)
+**Kafka MQ**: segmentio/kafka-go，KRaft 模式。开发环境无 Kafka 时降级为进程内 goroutine channel。
 
 | 文件 | 职责 |
 |------|------|
 | `app/file/internal/biz/file.go` | `MessageProducer` 接口 + `CloudMigrateMessage`/`ThumbnailMessage` 结构体 + `maybeEvictToCloud()` 淘汰逻辑 |
-| `app/file/internal/data/mq_goroutine.go` | goroutineMQ 实现 (进程内 buffered channel) |
+| `app/file/internal/data/mq_kafka.go` | kafkaProducer (Kafka 写入) + KafkaConsumer (Kafka 消费 + 云迁移处理) |
+| `app/file/internal/data/mq_goroutine.go` | goroutineMQ 降级实现 (进程内 buffered channel) + NewMessageProducer 自动选择 |
 
 ### CloudMigrateMessage (cloud-migrate)
 ```json
@@ -331,7 +343,7 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 }
 ```
 
-详细说明见 [docs/message-queue.md](docs/message-queue.md)。
+详细说明见 [docs/kafka.md](docs/kafka.md) 和 [docs/message-queue.md](docs/message-queue.md)。
 
 ## 环境变量
 
@@ -355,14 +367,16 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 | OSS_ACCESS_KEY_ID | OSS AK | file | *** |
 | OSS_ACCESS_KEY_SECRET | OSS SK | file | *** |
 | FILE_TMP_DIR | 分块临时目录 | file | /app/tmp |
-| FILE_STORE_DIR | 合并后文件目录 | file | /app/store |
+| FILE_STORE_DIR | 分块存储目录 | file | /app/store |
+| FILE_HTTP_ADDR | File Service HTTP 监听地址 | file | :9003 |
+| KAFKA_BROKERS | Kafka broker 地址 (逗号分隔) | file | kafka:9092 |
 | ERASURE_DATA_SHARDS | 纠删码数据分片数 | file | 4 |
 | ERASURE_PARITY_SHARDS | 纠删码校验分片数 | file | 2 |
 | ERASURE_MIN_FILE_SIZE | 纠删码最小文件大小 (字节) | file | 10485760 (10MB) |
 
 ## 关键设计决策
 
-1. **gRPC-only 服务**: User/File Service 只暴露 gRPC，不暴露 HTTP。HTTP 统一由 Gateway 处理。
+1. **双协议 File Service**: File Service 暴露 gRPC (:9002) + HTTP (:9003)。HTTP 用于客户端直传/下载分块，绕过网关。User Service 仅 gRPC。
 2. **Gin 网关**: 选择 Gin 而非 Kratos HTTP，因为网关职责是路由/中间件，不需要 Kratos 的 Service/Biz/Data 分层。
 3. **Consul 服务发现**: 使用 Kratos 的 `kratos.Registrar()` 注册，客户端使用 `discovery:///service-name` 端点。
 4. **跨服务调用**: File Service 定义 `biz.UserClient` 接口，由 `data/user_client.go` 通过 gRPC 实现，解耦业务逻辑和远程调用。
@@ -372,14 +386,14 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 8. **统一 Dockerfile**: 用单个 `Dockerfile` + `SERVICE` 构建参数替代多个 Dockerfile，编译路径为 `./app/${SERVICE}/cmd`。
 9. **CloudStorage 接口**: biz 层定义接口，data 层用 alibabacloud-oss-go-sdk-v2 (阿里云 OSS) 实现，有 noop 降级。
 10. **Redis 用量计数器**: `disk_usage:local` 用 INCRBY 原子操作追踪，避免每次查 DB 聚合。
-11. **Redis 分布式锁**: 分块级 SetNX + Lua 原子释放，合并级 SetNX 防重复合并，保障并发上传安全。
-12. **Reed-Solomon 纠删码**: 本地大文件 4+2 编码 (klauspost/reedsolomon)，`erasure_shards` 表存储分片元数据，下载时透明重建。
+11. **Redis 分布式锁**: 分块级 SetNX + Lua 原子释放，CompleteUpload 级 SetNX 防重复完成，保障并发上传安全。
+12. **Reed-Solomon 纠删码**: 直传 chunk 落盘后立即生成恢复分片并写入 OSS；legacy local_ec 仍保留本地大文件重建能力。
 
 ## 容器化
 
 - 统一 `Dockerfile`：多阶段构建 (golang:1.25 + bookworm-slim)，CGO_ENABLED=1 支持 SQLite，通过 `--build-arg SERVICE=user|file|gateway` 构建不同服务
 - 前端独立 `frontend/Dockerfile`：多阶段 (node:24-alpine → nginx:1.27-alpine)
-- `docker-compose.yml`：Consul + Redis + MySQL + 3 服务 + 前端
+- `docker-compose.yml`：Consul + Redis + MySQL + Kafka + 3 服务 + 前端
 
 ## CI/CD
 
@@ -388,14 +402,16 @@ go test -tags=integration ./...            # 包含集成测试 (需要基础设
 
 ## 最近更新（2026-07）
 
-- **分布式架构重构**: 移除 SeaweedFS / Kafka / file-worker，统一为本地磁盘 + 阿里云 OSS 单模式存储
-- **Reed-Solomon 纠删码**: 本地大文件 4+2 编码 (klauspost/reedsolomon)，容忍任意 2 片损坏，下载时透明重建
-- **Redis 分布式锁**: 分块级 SetNX + Lua 原子释放，合并级 SetNX 防重复合并
+- **打散存储 + 并发下载**: 文件分块打散到多个 File Service 实例，下载时客户端并发拉取各分块
+- **Kafka 消息队列**: segmentio/kafka-go (KRaft 模式)，cloud-migrate / file-thumbnail 两个 topic，开发环境无 Kafka 时降级 goroutine channel
+- **分块直传**: 客户端通过网关获取 UploadPlan 后直传 File Service HTTP 实例，绕过网关瓶颈
+- **一致性哈希容错**: hashRouter 支持标记不健康实例 + 15s 冷却 + 自动恢复
+- **分块恢复链路**: 直传 chunk 生成恢复分片写入 OSS，GetDownloadPlan 返回 recovery URL，主实例失败时由健康实例重建 chunk
+- **Redis 分布式锁**: 分块级 SetNX + Lua 原子释放，CompleteUpload 级 SetNX 防重复完成
 - **上传状态机**: FileStore 增加 `upload_status` (uploading/complete)，秒传仅匹配已完成文件
-- **数据模型**: `erasure_shards` 表，MD5 改为 (file_md5, size) 联合唯一索引
-- MySQL 为默认数据库 (SQLite 可选)，goroutine MQ 为唯一消息队列
-- 统一 Dockerfile (SERVICE=user|file|gateway)
-- 单 .env 配置文件，新增 ERASURE_* 环境变量
+- MySQL 为默认数据库 (SQLite 可选)
+- 统一 Dockerfile (SERVICE=user|file|gateway)，EXPOSE 9003
+- 单 .env 配置文件，新增 KAFKA_BROKERS / FILE_HTTP_ADDR 环境变量
 
 ## 前端架构
 

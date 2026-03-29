@@ -5,25 +5,24 @@ import { fileApi } from '@/api/file'
 
 const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB per upload chunk
 const HASH_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB per hash chunk for smoother UI
+const MAX_CONCURRENT_UPLOADS = 4 // parallel chunk uploads
 
 export interface UploadTask {
   id: string
   file: File
   fileName: string
   progress: number
-  status: 'pending' | 'hashing' | 'uploading' | 'merging' | 'done' | 'error'
+  status: 'pending' | 'hashing' | 'uploading' | 'completing' | 'done' | 'error'
   error?: string
 }
 
 const tasks = ref<UploadTask[]>([])
 
 export function useUpload() {
-  const isUploading = computed(() => tasks.value.some((t) => ['hashing', 'uploading', 'merging'].includes(t.status)))
+  const isUploading = computed(() => tasks.value.some((t) => ['hashing', 'uploading', 'completing'].includes(t.status)))
 
   /**
    * Compute file MD5 in 2MB chunks with spark-md5
-   * Chunked reads prevent UI freeze on large files and improve progress updates
-   * onProgress receives values in [0, 1]
    */
   async function computeMd5(file: File, onProgress?: (pct: number) => void): Promise<string> {
     const spark = new SparkMD5.ArrayBuffer()
@@ -35,7 +34,6 @@ export function useUpload() {
       const buffer = await slice.arrayBuffer()
       spark.append(buffer)
       onProgress?.((i + 1) / totalChunks)
-      // Yield to event loop between chunks so Vue can refresh UI
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
 
@@ -43,42 +41,70 @@ export function useUpload() {
   }
 
   /**
-   * Direct upload flow (Mode A default): upload chunks to gateway, then merge.
+   * Direct scattered upload: upload each chunk directly to the assigned
+   * file-service instance via HTTP PUT, bypassing the gateway.
    */
   async function directUpload(
     task: UploadTask,
     parentId: number,
     fileMd5: string,
     totalChunks: number,
+    uploadPlanAssignments: { chunkIndex: number; uploadUrl: string }[],
     uploadedChunks: number[],
     onComplete?: () => void,
   ) {
     task.status = 'uploading'
     const uploadedSet = new Set(uploadedChunks)
+    const token = localStorage.getItem('token') ?? ''
+
+    // Filter to only chunks that haven't been uploaded yet
+    const pending = uploadPlanAssignments.filter((a) => !uploadedSet.has(a.chunkIndex))
 
     let uploaded = uploadedSet.size
-    for (let i = 0; i < totalChunks; i++) {
-      if (uploadedSet.has(i)) continue
 
-      const start = i * CHUNK_SIZE
+    // Upload chunks in parallel with concurrency limit
+    const queue = [...pending]
+    const inflight: Promise<void>[] = []
+
+    async function uploadOne(assignment: { chunkIndex: number; uploadUrl: string }) {
+      const start = assignment.chunkIndex * CHUNK_SIZE
       const end = Math.min(start + CHUNK_SIZE, task.file.size)
-      const chunkBlob = task.file.slice(start, end)
+      const blob = task.file.slice(start, end)
+      const buffer = await blob.arrayBuffer()
 
-      await fileApi.uploadChunk({
-        fileMd5,
-        chunkIndex: i,
-        chunkSize: end - start,
-        chunkFile: chunkBlob,
+      const resp = await fetch(assignment.uploadUrl, {
+        method: 'PUT',
+        body: new Uint8Array(buffer),
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-File-Size': String(task.file.size),
+          Authorization: `Bearer ${token}`,
+        },
       })
+
+      if (!resp.ok) {
+        throw new Error(`Chunk ${assignment.chunkIndex} upload failed: ${resp.status}`)
+      }
 
       uploaded++
       task.progress = 15 + Math.round((uploaded / totalChunks) * 70)
     }
 
-    // Merge chunks
-    task.status = 'merging'
+    for (const assignment of queue) {
+      const p = uploadOne(assignment).then(() => {
+        inflight.splice(inflight.indexOf(p), 1)
+      })
+      inflight.push(p)
+      if (inflight.length >= MAX_CONCURRENT_UPLOADS) {
+        await Promise.race(inflight)
+      }
+    }
+    await Promise.all(inflight)
+
+    // Complete the upload (no merging — scattered storage)
+    task.status = 'completing'
     task.progress = 90
-    await fileApi.mergeChunks({
+    await fileApi.completeUpload({
       parentId,
       fileName: task.file.name,
       fileMd5,
@@ -103,7 +129,6 @@ export function useUpload() {
   ) {
     const totalParts = Math.ceil(task.file.size / CHUNK_SIZE)
 
-    // Init session (also handles resume: returns pending + completed parts)
     const { data: initReply } = await fileApi.initPresignedUpload({
       parentId,
       fileName: task.file.name,
@@ -112,7 +137,6 @@ export function useUpload() {
       totalParts,
     })
 
-    // Fast-upload dedup hit
     if (initReply.canFastUpload) {
       task.progress = 100
       task.status = 'done'
@@ -138,12 +162,10 @@ export function useUpload() {
       for (const part of pendingParts) {
         if (completedSet.has(part.partNumber)) continue
 
-        // S3 part numbers are 1-based; slice accordingly
         const start = (part.partNumber - 1) * partSize
         const end = Math.min(start + partSize, task.file.size)
         const blob = task.file.slice(start, end)
 
-        // PUT directly to presigned URL (no auth header — the URL is self-authenticating)
         const resp = await fetch(part.uploadUrl, {
           method: 'PUT',
           body: blob,
@@ -156,7 +178,6 @@ export function useUpload() {
 
         const etag = resp.headers.get('ETag') ?? ''
 
-        // Report the uploaded part to backend
         await fileApi.reportUploadedPart({
           sessionId,
           partNumber: part.partNumber,
@@ -168,8 +189,7 @@ export function useUpload() {
         task.progress = 15 + Math.round((uploaded / totalParts) * 70)
       }
 
-      // Complete the multipart upload
-      task.status = 'merging'
+      task.status = 'completing'
       task.progress = 90
       await fileApi.completePresignedUpload(sessionId)
 
@@ -177,13 +197,12 @@ export function useUpload() {
       task.status = 'done'
       onComplete?.()
     } catch (err) {
-      // Abort the S3 multipart upload to avoid leaked parts
       if (sessionId) {
         try {
           await fileApi.abortPresignedUpload(sessionId)
         } catch { /* best-effort cleanup */ }
       }
-      throw err // re-throw so outer catch sets task.status = 'error'
+      throw err
     }
   }
 
@@ -197,31 +216,25 @@ export function useUpload() {
       status: 'hashing',
     }
     tasks.value.push(taskData)
-    // Get the reactive proxy so all mutations trigger UI updates
     const task = tasks.value[tasks.value.length - 1]!
 
     try {
-      // Compute MD5 in chunks and map hashing progress to 0-15
       const fileMd5 = await computeMd5(file, (pct) => {
         task.progress = Math.round(pct * 15)
       })
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-      // Check if instant upload is available + decide upload mode
       const { data: checkResult } = await fileApi.checkUpload({
         fileMd5,
         fileSize: file.size,
         totalChunks,
       })
 
-      // Response is now camelCase thanks to the Axios interceptor
-      const canFastUpload = !!checkResult.canFastUpload
-
-      if (canFastUpload) {
-        // Instant upload hit, go straight to merge
-        task.status = 'merging'
+      if (checkResult.canFastUpload) {
+        // Instant dedup — just create the file record
+        task.status = 'completing'
         task.progress = 90
-        await fileApi.mergeChunks({
+        await fileApi.completeUpload({
           parentId,
           fileName: file.name,
           fileMd5,
@@ -234,21 +247,18 @@ export function useUpload() {
         return
       }
 
-      // Branch based on upload mode.
       const uploadMode = checkResult.uploadMode ?? 'direct'
       const uploadedChunks = checkResult.uploadedChunks ?? []
-      const uploadStatus = checkResult.uploadStatus
-
-      // Cooperative upload: another client is already uploading this file.
-      // We join by uploading only the missing chunks.
-      if (uploadStatus === 'uploading' && uploadedChunks.length > 0) {
-        task.progress = 15 + Math.round((uploadedChunks.length / totalChunks) * 70)
-      }
 
       if (uploadMode === 'presigned') {
         await presignedUpload(task, parentId, fileMd5, onComplete)
       } else {
-        await directUpload(task, parentId, fileMd5, totalChunks, uploadedChunks, onComplete)
+        // Build upload assignments from the plan, or fall back to empty
+        const assignments = (checkResult.uploadPlan?.assignments ?? []).map((a) => ({
+          chunkIndex: a.chunkIndex,
+          uploadUrl: a.uploadUrl,
+        }))
+        await directUpload(task, parentId, fileMd5, totalChunks, assignments, uploadedChunks, onComplete)
       }
     } catch (err: unknown) {
       task.status = 'error'

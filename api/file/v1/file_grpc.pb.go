@@ -21,7 +21,8 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	FileService_CheckUpload_FullMethodName             = "/api.file.v1.FileService/CheckUpload"
 	FileService_UploadChunk_FullMethodName             = "/api.file.v1.FileService/UploadChunk"
-	FileService_MergeChunks_FullMethodName             = "/api.file.v1.FileService/MergeChunks"
+	FileService_CompleteUpload_FullMethodName          = "/api.file.v1.FileService/CompleteUpload"
+	FileService_GetDownloadPlan_FullMethodName         = "/api.file.v1.FileService/GetDownloadPlan"
 	FileService_ListFiles_FullMethodName               = "/api.file.v1.FileService/ListFiles"
 	FileService_GetDownloadURL_FullMethodName          = "/api.file.v1.FileService/GetDownloadURL"
 	FileService_DeleteFile_FullMethodName              = "/api.file.v1.FileService/DeleteFile"
@@ -46,12 +47,14 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type FileServiceClient interface {
-	// Check instant upload and resumable upload
+	// Check instant upload and resumable upload; returns upload plan with per-chunk instance assignments
 	CheckUpload(ctx context.Context, in *CheckUploadRequest, opts ...grpc.CallOption) (*CheckUploadReply, error)
-	// Upload file chunk
+	// Upload file chunk (kept for single-instance / fallback mode)
 	UploadChunk(ctx context.Context, in *UploadChunkRequest, opts ...grpc.CallOption) (*UploadChunkReply, error)
-	// Merge file chunks
-	MergeChunks(ctx context.Context, in *MergeChunksRequest, opts ...grpc.CallOption) (*MergeChunksReply, error)
+	// Complete scattered upload after all chunks are uploaded directly to file-service instances
+	CompleteUpload(ctx context.Context, in *CompleteUploadRequest, opts ...grpc.CallOption) (*CompleteUploadReply, error)
+	// Get download plan with per-chunk instance addresses for parallel download
+	GetDownloadPlan(ctx context.Context, in *GetDownloadPlanRequest, opts ...grpc.CallOption) (*GetDownloadPlanReply, error)
 	// Get user file list
 	ListFiles(ctx context.Context, in *ListFilesRequest, opts ...grpc.CallOption) (*ListFilesReply, error)
 	// Get file download URL
@@ -118,10 +121,20 @@ func (c *fileServiceClient) UploadChunk(ctx context.Context, in *UploadChunkRequ
 	return out, nil
 }
 
-func (c *fileServiceClient) MergeChunks(ctx context.Context, in *MergeChunksRequest, opts ...grpc.CallOption) (*MergeChunksReply, error) {
+func (c *fileServiceClient) CompleteUpload(ctx context.Context, in *CompleteUploadRequest, opts ...grpc.CallOption) (*CompleteUploadReply, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(MergeChunksReply)
-	err := c.cc.Invoke(ctx, FileService_MergeChunks_FullMethodName, in, out, cOpts...)
+	out := new(CompleteUploadReply)
+	err := c.cc.Invoke(ctx, FileService_CompleteUpload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fileServiceClient) GetDownloadPlan(ctx context.Context, in *GetDownloadPlanRequest, opts ...grpc.CallOption) (*GetDownloadPlanReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDownloadPlanReply)
+	err := c.cc.Invoke(ctx, FileService_GetDownloadPlan_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -321,12 +334,14 @@ func (c *fileServiceClient) AbortPresignedUpload(ctx context.Context, in *AbortP
 // All implementations must embed UnimplementedFileServiceServer
 // for forward compatibility.
 type FileServiceServer interface {
-	// Check instant upload and resumable upload
+	// Check instant upload and resumable upload; returns upload plan with per-chunk instance assignments
 	CheckUpload(context.Context, *CheckUploadRequest) (*CheckUploadReply, error)
-	// Upload file chunk
+	// Upload file chunk (kept for single-instance / fallback mode)
 	UploadChunk(context.Context, *UploadChunkRequest) (*UploadChunkReply, error)
-	// Merge file chunks
-	MergeChunks(context.Context, *MergeChunksRequest) (*MergeChunksReply, error)
+	// Complete scattered upload after all chunks are uploaded directly to file-service instances
+	CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadReply, error)
+	// Get download plan with per-chunk instance addresses for parallel download
+	GetDownloadPlan(context.Context, *GetDownloadPlanRequest) (*GetDownloadPlanReply, error)
 	// Get user file list
 	ListFiles(context.Context, *ListFilesRequest) (*ListFilesReply, error)
 	// Get file download URL
@@ -379,8 +394,11 @@ func (UnimplementedFileServiceServer) CheckUpload(context.Context, *CheckUploadR
 func (UnimplementedFileServiceServer) UploadChunk(context.Context, *UploadChunkRequest) (*UploadChunkReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method UploadChunk not implemented")
 }
-func (UnimplementedFileServiceServer) MergeChunks(context.Context, *MergeChunksRequest) (*MergeChunksReply, error) {
-	return nil, status.Error(codes.Unimplemented, "method MergeChunks not implemented")
+func (UnimplementedFileServiceServer) CompleteUpload(context.Context, *CompleteUploadRequest) (*CompleteUploadReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompleteUpload not implemented")
+}
+func (UnimplementedFileServiceServer) GetDownloadPlan(context.Context, *GetDownloadPlanRequest) (*GetDownloadPlanReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDownloadPlan not implemented")
 }
 func (UnimplementedFileServiceServer) ListFiles(context.Context, *ListFilesRequest) (*ListFilesReply, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListFiles not implemented")
@@ -493,20 +511,38 @@ func _FileService_UploadChunk_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _FileService_MergeChunks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(MergeChunksRequest)
+func _FileService_CompleteUpload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteUploadRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(FileServiceServer).MergeChunks(ctx, in)
+		return srv.(FileServiceServer).CompleteUpload(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: FileService_MergeChunks_FullMethodName,
+		FullMethod: FileService_CompleteUpload_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(FileServiceServer).MergeChunks(ctx, req.(*MergeChunksRequest))
+		return srv.(FileServiceServer).CompleteUpload(ctx, req.(*CompleteUploadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FileService_GetDownloadPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDownloadPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FileServiceServer).GetDownloadPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: FileService_GetDownloadPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FileServiceServer).GetDownloadPlan(ctx, req.(*GetDownloadPlanRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -844,8 +880,12 @@ var FileService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _FileService_UploadChunk_Handler,
 		},
 		{
-			MethodName: "MergeChunks",
-			Handler:    _FileService_MergeChunks_Handler,
+			MethodName: "CompleteUpload",
+			Handler:    _FileService_CompleteUpload_Handler,
+		},
+		{
+			MethodName: "GetDownloadPlan",
+			Handler:    _FileService_GetDownloadPlan_Handler,
 		},
 		{
 			MethodName: "ListFiles",

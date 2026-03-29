@@ -2,7 +2,10 @@
 
 ## 概述
 
-文件服务对超过阈值大小的本地文件自动应用 Reed-Solomon 纠删码，将单一文件切分为数据分片 + 校验分片，提供磁盘级容错能力。
+当前系统里有两条 Reed-Solomon 使用路径：
+
+1. **主路径**：每个直传 chunk 上传成功后立即生成恢复分片，写入 OSS，实例故障时由健康实例重建该 chunk。
+2. **兼容路径**：legacy `local_ec` 文件仍可通过 `erasure_shards` 表记录的分片信息重建整文件。
 
 ## 配置
 
@@ -12,37 +15,36 @@
 | `ERASURE_PARITY_SHARDS` | 2 | 校验分片数 |
 | `ERASURE_MIN_FILE_SIZE` | 1048576 (1MB) | 触发 EC 的最小文件大小 |
 
-默认 4+2 配置下，6 个分片中任意丢失 2 个仍可完整恢复原文件。存储开销为 50% (6/4 = 1.5x)。
+默认 4+2 配置下，6 个分片中任意丢失 2 个仍可恢复原始数据。当前 chunk recovery 和 legacy local_ec 共用同一套编码参数。
 
-## 编码流程
+## Chunk Recovery 编码流程
 
 ```
-MergeChunks 步骤 8.5:
+UploadChunk 成功后:
 
-  原始文件 (≥ MinFileSize)
+  chunk 文件 (≥ MinFileSize)
        │
        ▼
-  EncodeErasure(filePath, storeDir, md5, 4, 2)
+  EncodeErasure(chunkPath, tempDir, md5.chunk.index, 4, 2)
        │
-       ├── 读取文件 → reedsolomon.Split → 4 个 data shard
+       ├── 读取 chunk → reedsolomon.Split → 4 个 data shard
        ├── reedsolomon.Encode → 生成 2 个 parity shard
-       └── 写入 6 个 shard 文件:
-           {md5}.shard.0 (data)
-           {md5}.shard.1 (data)
-           {md5}.shard.2 (data)
-           {md5}.shard.3 (data)
-           {md5}.shard.4 (parity)
-           {md5}.shard.5 (parity)
+       └── 逐个上传到 OSS:
+           recovery/{md5}/{chunkIndex}/shard-0.rs
+           ...
+           recovery/{md5}/{chunkIndex}/shard-5.rs
        │
        ▼
-  CreateErasureShard × 6 (写入 DB)
-       │
-       ▼
-  删除原始合并文件
-       │
-       ▼
-  StorageType = "local_ec"
+  Gateway 在 DownloadPlan HTTP 响应里补 recovery URL
 ```
+
+## Legacy local_ec 路径
+
+旧的本地整文件编码能力仍然保留：
+
+- `encodeWithErasure()` 会把整文件拆成 `{md5}.shard.{index}`
+- `erasure_shards` 表保存这些分片的元数据
+- `OpenLocalFile()` 在 `storage_type=local_ec` 时透明重建文件
 
 ## 分片命名
 
@@ -73,7 +75,21 @@ CREATE TABLE erasure_shards (
 ## 重建流程
 
 ```
-OpenLocalFile (StorageType = "local_ec"):
+Chunk recovery:
+
+  失败的主 chunk
+       │
+       ▼
+  Gateway recovery URL
+       │
+       ▼
+  健康 File Service 实例
+       │
+       ├── 从 OSS 拉取 recovery/{md5}/{chunkIndex}/shard-*.rs
+       ├── ReconstructErasure(paths, 4, 2)
+       └── 返回重建后的 chunk 字节流
+
+legacy local_ec:
 
   FindErasureShards(fileStoreID)
        │
@@ -109,6 +125,6 @@ Biz 层通过接口依赖注入，data 层 `rsEncoder` 提供基于 `klauspost/r
 
 | 文件 | 职责 |
 |------|------|
-| `app/file/internal/biz/file.go` | `ErasureEncoder` 接口、`encodeWithErasure`/`reconstructFromShards` 方法 |
+| `app/file/internal/biz/file.go` | `ErasureEncoder` 接口、`PrepareChunkRecovery`/`RecoverChunk`/`reconstructFromShards` 方法 |
 | `app/file/internal/data/erasure.go` | `rsEncoder` 实现、`EncodeErasure`/`ReconstructErasure` 函数 |
 | `app/file/cmd/main.go` | `provideErasureConfig` 读取环境变量 |

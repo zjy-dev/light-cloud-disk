@@ -2,173 +2,93 @@
 
 ## 概述
 
-API Gateway 是系统的唯一 HTTP 入口，负责请求路由、JWT 认证、CORS 处理，以及 HTTP 到 gRPC 的协议转换。基于 Gin 框架实现。
+Gateway 是唯一对浏览器暴露的 HTTP 入口，但它不再代理 chunk 数据本身。现在的职责分成三类：
 
-## 架构
+1. 认证与常规文件管理 API
+2. UploadPlan / DownloadPlan 这样的控制面接口
+3. chunk recovery 的失败兜底代理
 
-```
-                         HTTP :8080
-                             │
-┌────────────────────────────┼────────────────────────────┐
-│                     Gin Router                          │
-│                                                         │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐  │
-│  │  Logger MW   │→│  CORS MW    │→│  Recovery MW │  │
-│  └──────────────┘  └─────────────┘  └──────────────┘  │
-│                                                         │
-│  /api/v1 (公开)              /api/v1 (保护)             │
-│  ├── POST /user/register     ┌─────────────┐            │
-│  ├── POST /user/login        │  JWT Auth   │            │
-│  └── GET  /share/:id         └──────┬──────┘            │
-│                              ├── GET  /user/info         │
-│                              ├── PUT  /user/info         │
-│                              ├── POST /file/check-upload │
-│                              ├── ...其他文件操作           │
-│                              └── POST /share             │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              Handler Layer                       │   │
-│  │  UserHandler ──gRPC──▶ user-service              │   │
-│  │  FileHandler ──gRPC──▶ file-service              │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              Client Layer (Consul)               │   │
-│  │  discovery:///user-service → gRPC conn           │   │
-│  │  discovery:///file-service → gRPC conn           │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-```
+## 关键路由
 
-## 目录结构
+### 公开路由
 
-```
-app/gateway/
-├── cmd/
-│   └── main.go              # Gin 路由定义、启动
-├── internal/
-│   ├── client/
-│   │   └── client.go        # Consul gRPC 客户端构造
-│   ├── handler/
-│   │   ├── user.go          # 用户 HTTP 处理器
-│   │   ├── file.go          # 文件 HTTP 处理器
-│   │   └── handler_test.go  # 13 个单元测试
-│   └── middleware/
-│       ├── jwt.go           # JWT 认证中间件
-│       ├── cors.go          # CORS + Logger 中间件
-│       └── middleware_test.go # 8 个单元测试
-└── configs/
-    └── config.yaml
-```
+- `POST /api/v1/user/register`
+- `POST /api/v1/user/login`
+- `GET /api/v1/share/:share_id`
 
-## JWT 认证中间件
+### 保护路由
 
-### 工作流程
+- `POST /api/v1/file/check-upload`
+- `POST /api/v1/file/complete-upload`
+- `GET /api/v1/file/download-plan/:file_id`
+- `GET /api/v1/file/chunks/:md5/:index/recovery`
+- 其它用户信息、文件管理、回收站、分享接口
 
-```
-请求 → 检查 Authorization Header → 解析 Bearer Token → 验证签名 → 提取 user_id → 写入 Context
-```
+## Gateway 在上传链路中的作用
 
-### 关键实现
+Gateway 不再接收 chunk 二进制。
 
-```go
-func JWTAuth() gin.HandlerFunc {
-    secret := os.Getenv("JWT_SECRET")
-    return func(c *gin.Context) {
-        // 1. Extract token from Authorization header
-        authHeader := c.GetHeader("Authorization")
-        parts := strings.SplitN(authHeader, " ", 2)
-        // 2. Validate Bearer prefix
-        // 3. Parse and verify JWT
-        token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-            return []byte(secret), nil
-        })
-        // 4. Read user_id from claims
-        claims := token.Claims.(jwt.MapClaims)
-        userID := int64(claims["user_id"].(float64))
-        // 5. Store user_id in Gin context for downstream handlers
-        c.Set("user_id", userID)
-    }
-}
-```
+它只做两件事：
 
-### 路由分组
+1. 调用 file-service 的 `CheckUpload`
+2. 基于一致性哈希环补全 UploadPlan
 
-- **公开路由** (无需认证): 注册、登录、获取分享
-- **保护路由** (需 JWT): 所有用户信息和文件操作
+生成 UploadPlan 时，Gateway 会：
 
-## HTTP → gRPC 协议转换
+- 使用 `pickN(fileMD5, totalChunks)` 选择多个 file-service HTTP 地址
+- 为每个 chunk 生成 `uploadUrl`
+- 把 UploadPlan 返回给浏览器，后续 chunk 直连 file-service HTTP :9003
 
-Handler 层负责将 HTTP 请求转换为 gRPC 调用：
+## Gateway 在下载链路中的作用
 
-```go
-func (h *UserHandler) Register(c *gin.Context) {
-    // 1. Bind HTTP JSON body to proto request
-    var req userv1.RegisterRequest
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        return
-    }
-    // 2. Call gRPC method
-    reply, err := h.clients.User.Register(c.Request.Context(), &req)
-    // 3. Return proto reply as JSON
-    c.JSON(http.StatusOK, reply)
-}
-```
+`GetDownloadPlan` 的 gRPC 返回值只有主下载地址。Gateway 在 HTTP 响应层额外补充 `backupUrls`：
 
-上传接口 `POST /api/v1/file/upload-chunk` 是一个特例：Gateway 使用 `multipart/form-data` 解析分块文件（二进制），再组装成 `UploadChunkRequest` 转发到 File Service。
+- 主地址：原始 chunk 所在实例的直连地址
+- 备份地址：`/api/v1/file/chunks/:md5/:index/recovery?file_size=...`
 
-对于需要认证的路由，Handler 从 Gin Context 获取 `user_id` 并注入请求：
+前端优先请求主地址，失败后再请求 `backupUrls`。这样正常下载不走网关，只有恢复路径才会经过 Gateway。
 
-```go
-func (h *FileHandler) ListFiles(c *gin.Context) {
-    userID := c.GetInt64("user_id")  // JWT 中间件写入
-    // ...
-    reply, err := h.clients.File.ListFiles(ctx, &filev1.ListFilesRequest{
-        UserId: userID,
-        // ...
-    })
-}
-```
+## Recovery 代理
 
-## CORS 中间件
+`RecoverChunk` handler 的逻辑是：
 
-允许跨域请求，支持：
-- 所有源 (`*`)
-- 常用 HTTP 方法 (GET, POST, PUT, DELETE, OPTIONS)
-- Authorization 和 Content-Type 头
-- 预检请求 (OPTIONS) 直接返回 204
+1. 从 Consul 哈希环选取健康 file-service HTTP 地址
+2. 代理请求到 `GET /api/v1/chunks/recover/:md5/:index`
+3. 如果某个实例请求失败，立即把它标记为不健康
+4. 继续尝试下一个健康实例
+5. 成功后把恢复出的 chunk 字节流直接回给浏览器
 
-## 测试
+这层代理只负责故障恢复，不参与正常 chunk 数据传输。
 
-### Handler 测试 (13 个)
+## 一致性哈希路由
 
-使用 Mock gRPC 客户端测试 HTTP 处理逻辑：
+Gateway 内部维护 file-service 哈希环：
 
-```go
-userClient := &mockUserClient{
-    registerFn: func(ctx context.Context, in *userv1.RegisterRequest, ...) (*userv1.RegisterReply, error) {
-        return &userv1.RegisterReply{UserId: 1, Username: in.Username}, nil
-    },
-}
-h := NewUserHandler(newTestClients(userClient, &mockFileClient{}))
-// Build HTTP request and verify response
-```
+- 虚拟节点：150
+- 冷却时间：15 秒
+- Consul 刷新周期：15 秒
+- 上传分配：`pickN`
+- 控制面 gRPC 路由：`pick`
 
-### Middleware 测试 (8 个)
+因此 Gateway 既能把同一个文件的控制请求路由到稳定实例，也能为打散上传生成多实例计划。
 
-覆盖 JWT 的各种边界情况：
-- 有效 token
-- 缺少 Authorization header
-- 格式错误 (非 Bearer)
-- Token 过期
-- 错误密钥
-- 缺少 user_id claim
+## JWT 认证
+
+- Gateway 负责校验登录态并把 `user_id` 写入 Gin Context
+- file-service HTTP chunk 端点也会二次校验 Bearer Token
+- 因此浏览器既能访问 Gateway API，也能安全直连 file-service HTTP
+
+## 测试重点
+
+当前 handler 测试覆盖了：
+
+- CheckUpload / CompleteUpload / GetDownloadPlan 路径
+- presigned upload 代理
+- recovery backup URL 的补全逻辑
+- JWT / CORS / Logger 中间件
 
 ## 面试要点
 
-1. **为什么用 Gateway 模式？** — 统一入口，集中认证，前端只需一个 baseURL
-2. **为什么不在每个微服务里做认证？** — 避免重复代码，认证逻辑集中维护
-3. **JWT vs Session？** — JWT 无状态，适合微服务；Session 需要共享存储
-4. **proto 直接作为 HTTP 响应？** — Gin 的 `c.JSON()` 使用 `encoding/json` 序列化 proto struct，字段名为 proto 的 `json` tag (snake_case)
-5. **Consul 客户端连接复用？** — 启动时建立连接，Consul 负责地址解析和负载均衡
+1. 为什么 Gateway 不再代理上传：否则多实例扩容也无法摆脱单入口带宽瓶颈。
+2. 为什么 recovery 放在 Gateway：它拥有健康实例视角，适合在失败时选择一个仍然可用的 file-service 去重建 chunk。
+3. 为什么 HTTP 响应而不是 proto 里补 backupUrls：前端对接的是 HTTP API，Gateway 可以在不改 gRPC 合同的情况下补充恢复语义。

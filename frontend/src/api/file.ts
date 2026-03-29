@@ -1,15 +1,15 @@
 import client from './client'
 import type {
   CheckUploadReply,
+  CompleteUploadReply,
   CreateShareReply,
   DiskUsageReply,
+  DownloadPlanReply,
   GetDownloadURLReply,
   GetShareReply,
   ListFilesReply,
   ListTrashReply,
-  MergeChunksReply,
   SearchFilesReply,
-  UploadChunkReply,
   InitPresignedUploadReply,
   ReportUploadedPartReply,
   CompletePresignedUploadReply,
@@ -77,30 +77,24 @@ export const fileApi = {
     })
   },
 
-  uploadChunk(data: { fileMd5: string; chunkIndex: number; chunkSize: number; chunkFile: Blob }) {
-    const formData = new FormData()
-    formData.append('file_md5', data.fileMd5)
-    formData.append('chunk_index', String(data.chunkIndex))
-    formData.append('chunk_size', String(data.chunkSize))
-    formData.append('chunk_file', data.chunkFile)
-
-    return client.post<UploadChunkReply>('/file/upload-chunk', formData)
-  },
-
-  mergeChunks(data: {
+  completeUpload(data: {
     parentId: number
     fileName: string
     fileMd5: string
     fileSize: number
     totalChunks: number
   }) {
-    return client.post<MergeChunksReply>('/file/merge-chunks', {
+    return client.post<CompleteUploadReply>('/file/complete-upload', {
       parent_id: data.parentId,
       file_name: data.fileName,
       file_md5: data.fileMd5,
       file_size: data.fileSize,
       total_chunks: data.totalChunks,
     })
+  },
+
+  getDownloadPlan(fileId: number) {
+    return client.get<DownloadPlanReply>(`/file/download-plan/${fileId}`)
   },
 
   // Trash APIs

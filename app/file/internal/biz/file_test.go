@@ -124,10 +124,6 @@ func (m *MockFileRepo) GetUploadedChunks(ctx context.Context, fileMD5 string) ([
 func (m *MockFileRepo) SaveChunkData(ctx context.Context, fileMD5 string, chunkIndex int32, data []byte) error {
 	return m.Called(ctx, fileMD5, chunkIndex, data).Error(0)
 }
-func (m *MockFileRepo) MergeChunkData(ctx context.Context, fileMD5, fileName string, totalChunks int32) (string, error) {
-	args := m.Called(ctx, fileMD5, fileName, totalChunks)
-	return args.String(0), args.Error(1)
-}
 func (m *MockFileRepo) ClearChunkInfo(ctx context.Context, fileMD5 string) error {
 	return m.Called(ctx, fileMD5).Error(0)
 }
@@ -225,6 +221,33 @@ func (m *MockFileRepo) FindErasureShards(ctx context.Context, fileStoreID int64)
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*ErasureShard), args.Error(1)
+}
+func (m *MockFileRepo) CreateChunkRecord(ctx context.Context, rec *ChunkRecord) error {
+	return m.Called(ctx, rec).Error(0)
+}
+func (m *MockFileRepo) FindChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) ([]*ChunkRecord, error) {
+	args := m.Called(ctx, fileMD5, fileSize)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*ChunkRecord), args.Error(1)
+}
+func (m *MockFileRepo) FindChunkRecordByIndex(ctx context.Context, fileMD5 string, fileSize int64, chunkIndex int32) (*ChunkRecord, error) {
+	args := m.Called(ctx, fileMD5, fileSize, chunkIndex)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*ChunkRecord), args.Error(1)
+}
+func (m *MockFileRepo) CountChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) (int32, error) {
+	args := m.Called(ctx, fileMD5, fileSize)
+	return args.Get(0).(int32), args.Error(1)
+}
+func (m *MockFileRepo) DeleteChunkRecords(ctx context.Context, fileMD5 string, fileSize int64) error {
+	return m.Called(ctx, fileMD5, fileSize).Error(0)
+}
+func (m *MockFileRepo) UpdateChunkStorageLocation(ctx context.Context, id int64, storageType, storagePath string) error {
+	return m.Called(ctx, id, storageType, storagePath).Error(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -513,17 +536,17 @@ func TestSaveChunk_LockFailed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MergeChunks tests
+// CompleteUpload tests
 // ---------------------------------------------------------------------------
 
-func TestMergeChunks_ExistingStore(t *testing.T) {
+func TestCompleteUpload_ExistingStore(t *testing.T) {
 	repo := new(MockFileRepo)
 	userClient := new(MockUserClient)
 	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
-		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "completed", RefCount: 1,
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered, UploadStatus: "completed", RefCount: 1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
@@ -532,7 +555,7 @@ func TestMergeChunks_ExistingStore(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	file, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), file.ID)
@@ -540,14 +563,14 @@ func TestMergeChunks_ExistingStore(t *testing.T) {
 	userClient.AssertExpectations(t)
 }
 
-func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
+func TestCompleteUpload_UpdateStorageFailsGracefully(t *testing.T) {
 	repo := new(MockFileRepo)
 	userClient := new(MockUserClient)
 	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
-		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "completed", RefCount: 1,
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered, UploadStatus: "completed", RefCount: 1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
@@ -556,23 +579,22 @@ func TestMergeChunks_UpdateStorageFailsGracefully(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(errors.New("user-service unavailable"))
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	file, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, file)
 	repo.AssertExpectations(t)
 }
 
-func TestMergeChunks_LockFailed(t *testing.T) {
+func TestCompleteUpload_LockFailed(t *testing.T) {
 	repo := new(MockFileRepo)
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
 
-	// No existing completed store → proceeds to lock acquisition
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
 	repo.On("AcquireMergeLock", ctx, "abc123", mock.Anything).Return(false, nil)
 
-	_, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	_, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.ErrorIs(t, err, ErrMergeLocked)
 }
@@ -596,21 +618,17 @@ func TestSaveChunk_WriteErrorReleasesLock(t *testing.T) {
 	repo.AssertCalled(t, "ReleaseChunkLock", ctx, "abc123", int32(0))
 }
 
-// T041: MergeChunks dedup after acquiring lock (step 3)
-func TestMergeChunks_DedupAfterLock(t *testing.T) {
+func TestCompleteUpload_DedupAfterLock(t *testing.T) {
 	repo := new(MockFileRepo)
 	userClient := new(MockUserClient)
 	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
-	// Step 1: no completed store initially
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Step 2: lock acquired
 	repo.On("AcquireMergeLock", ctx, "abc123", mock.Anything).Return(true, nil)
 	repo.On("ReleaseMergeLock", ctx, "abc123").Return(nil)
-	// Step 3: another instance completed the merge while we waited for the lock
 	repo.On("FindStoreByMD5AndStatus", ctx, "abc123", "completed").Return(&FileStore{
-		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "completed", RefCount: 1,
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered, UploadStatus: "completed", RefCount: 1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
@@ -619,32 +637,26 @@ func TestMergeChunks_DedupAfterLock(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	file, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(5), file.ID)
-	// Verify merge was not performed (no MergeChunkData call)
-	repo.AssertNotCalled(t, "MergeChunkData")
 	repo.AssertExpectations(t)
 }
 
-// T044: MergeChunks UNIQUE constraint race — CreateStoreWithStatus returns already-completed store
-func TestMergeChunks_UniqueConstraintRace(t *testing.T) {
+func TestCompleteUpload_UniqueConstraintRace(t *testing.T) {
 	repo := new(MockFileRepo)
 	userClient := new(MockUserClient)
 	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
-	// Step 1: no completed store initially
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Step 2: lock acquired
 	repo.On("AcquireMergeLock", ctx, "abc123", mock.Anything).Return(true, nil)
 	repo.On("ReleaseMergeLock", ctx, "abc123").Return(nil)
-	// Step 3: no completed store after lock either
 	repo.On("FindStoreByMD5AndStatus", ctx, "abc123", "completed").Return(nil, errors.New("not found"))
-	// Step 4: UNIQUE constraint hit — another instance already created and completed the store
+	repo.On("CountChunkRecords", ctx, "abc123", int64(2048)).Return(int32(2), nil)
 	repo.On("CreateStoreWithStatus", ctx, mock.AnythingOfType("*biz.FileStore")).Return(&FileStore{
-		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "completed", RefCount: 1,
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered, UploadStatus: "completed", RefCount: 1,
 	}, nil)
 	repo.On("IncrStoreRefCount", ctx, "abc123").Return(nil)
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
@@ -653,70 +665,45 @@ func TestMergeChunks_UniqueConstraintRace(t *testing.T) {
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	file, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(6), file.ID)
-	// Verify no actual merge was performed
-	repo.AssertNotCalled(t, "MergeChunkData")
 	repo.AssertExpectations(t)
 }
 
-// T044: Full MergeChunks flow (steps 4→11) — new file merged, stored locally, status transitions
-func TestMergeChunks_FullFlow(t *testing.T) {
+func TestCompleteUpload_FullFlow(t *testing.T) {
 	repo := new(MockFileRepo)
 	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("Close").Return(nil).Maybe()
-	cloudStore := new(MockCloudStorage)
-	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	uc := NewFileUsecase(repo, userClient, mq, cloudStore, defaultStorageCfg, nil, nil, "/tmp/test-store", log.DefaultLogger)
+	uc := newTestFileUsecase(repo, userClient)
 	ctx := context.Background()
 
-	// Step 1: no existing store
 	repo.On("FindStoreByMD5", ctx, "abc123").Return(nil, errors.New("not found"))
-	// Step 2: lock acquired
 	repo.On("AcquireMergeLock", ctx, "abc123", mock.Anything).Return(true, nil)
 	repo.On("ReleaseMergeLock", ctx, "abc123").Return(nil)
-	// Step 3: no completed store after lock
 	repo.On("FindStoreByMD5AndStatus", ctx, "abc123", "completed").Return(nil, errors.New("not found"))
-	// Step 4: create store with uploading status → returns new store
+	repo.On("CountChunkRecords", ctx, "abc123", int64(2048)).Return(int32(2), nil)
 	repo.On("CreateStoreWithStatus", ctx, mock.AnythingOfType("*biz.FileStore")).Return(&FileStore{
-		ID: 42, FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "uploading", RefCount: 1,
+		ID: 42, FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered, UploadStatus: "uploading", RefCount: 1, TotalChunks: 2,
 	}, nil)
-	// Step 5: verify all chunks present
-	repo.On("CountUploadedChunks", ctx, "abc123").Return(int32(2), nil)
-	// Step 6: merge chunks
-	repo.On("MergeChunkData", ctx, "abc123", "file.zip", int32(2)).Return("/tmp/test-store/abc123.zip", nil)
-	// Step 7: check disk usage for storage decision
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
-	repo.On("IncrDiskUsage", ctx, "local", int64(2048)).Return(nil)
-	// Step 9: update storage location and status → completed
-	repo.On("UpdateStorageLocation", ctx, "abc123", StorageLocal, "abc123.zip").Return(nil)
 	repo.On("UpdateStoreStatus", ctx, int64(42), "completed").Return(nil)
-	// Step 10: create file record
 	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{
 		ID: 10, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
 	}, nil)
-	// Step 11: cleanup
 	repo.On("ClearChunkInfo", ctx, "abc123").Return(nil)
 	userClient.On("UpdateStorageUsed", ctx, int64(100), int64(2048)).Return(nil)
+	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
 
-	file, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
+	file, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 2048, 2)
 
 	assert.NoError(t, err)
 	assert.Equal(t, int64(10), file.ID)
 	assert.Equal(t, "file.zip", file.Name)
-	repo.AssertCalled(t, "MergeChunkData", ctx, "abc123", "file.zip", int32(2))
 	repo.AssertCalled(t, "UpdateStoreStatus", ctx, int64(42), "completed")
 	repo.AssertExpectations(t)
 }
 
-// T057: MergeChunks fails when not all chunks are present (cross-instance failover)
-func TestMergeChunks_IncompleteChunks(t *testing.T) {
+func TestCompleteUpload_IncompleteChunks(t *testing.T) {
 	repo := new(MockFileRepo)
 	uc := newTestFileUsecase(repo, new(MockUserClient))
 	ctx := context.Background()
@@ -725,17 +712,13 @@ func TestMergeChunks_IncompleteChunks(t *testing.T) {
 	repo.On("AcquireMergeLock", ctx, "abc123", mock.Anything).Return(true, nil)
 	repo.On("ReleaseMergeLock", ctx, "abc123").Return(nil)
 	repo.On("FindStoreByMD5AndStatus", ctx, "abc123", "completed").Return(nil, errors.New("not found"))
-	repo.On("CreateStoreWithStatus", ctx, mock.AnythingOfType("*biz.FileStore")).Return(&FileStore{
-		ID: 99, FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageLocal, UploadStatus: "uploading", RefCount: 1,
-	}, nil)
-	// Only 3 of 5 chunks present
-	repo.On("CountUploadedChunks", ctx, "abc123").Return(int32(3), nil)
+	// Only 3 of 5 chunk records
+	repo.On("CountChunkRecords", ctx, "abc123", int64(5120)).Return(int32(3), nil)
 
-	_, err := uc.MergeChunks(ctx, 100, 0, "file.zip", "abc123", 5120, 5)
+	_, err := uc.CompleteUpload(ctx, 100, 0, "file.zip", "abc123", 5120, 5)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "incomplete chunks")
-	repo.AssertNotCalled(t, "MergeChunkData")
 }
 
 // ---------------------------------------------------------------------------
@@ -997,6 +980,64 @@ func TestGetDownloadURL_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrFileNotFound)
 }
 
+func TestGetDownloadPlan_MixedChunkStorage(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindByID", ctx, int64(7)).Return(&File{
+		ID: 7, UserID: 100, Name: "file.zip", FileMD5: "abc123", Size: 2048,
+	}, nil)
+	d.repo.On("FindStoreByMD5", ctx, "abc123").Return(&FileStore{
+		FileMD5: "abc123", StorePath: "abc123.zip", StorageType: StorageScattered,
+	}, nil)
+	d.repo.On("FindChunkRecords", ctx, "abc123", int64(2048)).Return([]*ChunkRecord{
+		{
+			FileMD5: "abc123", ChunkIndex: 0, ChunkSize: 1024,
+			InstanceID: "10.0.0.1:9003", StorageType: StorageLocal, Checksum: "sum-0",
+		},
+		{
+			FileMD5: "abc123", ChunkIndex: 1, ChunkSize: 1024,
+			StorageType: StorageOSS, StorePath: "chunks/abc123/000001.part", Checksum: "sum-1",
+		},
+	}, nil)
+	d.cloudStore.On("PresignGetURL", ctx, "chunks/abc123/000001.part", time.Hour).
+		Return("http://oss/chunks/abc123/000001.part", nil).Once()
+
+	plan, err := d.uc.GetDownloadPlan(ctx, 100, 7)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(2), plan.TotalChunks)
+	assert.Len(t, plan.Chunks, 2)
+	assert.Equal(t, "http://10.0.0.1:9003/api/v1/chunks/abc123/0", plan.Chunks[0].DownloadURL)
+	assert.Equal(t, "http://oss/chunks/abc123/000001.part", plan.Chunks[1].DownloadURL)
+	d.repo.AssertExpectations(t)
+	d.cloudStore.AssertExpectations(t)
+}
+
+func TestGetDownloadPlan_SingleOSSObjectWithoutChunkRecords(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindByID", ctx, int64(8)).Return(&File{
+		ID: 8, UserID: 100, Name: "archive.zip", FileMD5: "def456", Size: 4096,
+	}, nil)
+	d.repo.On("FindStoreByMD5", ctx, "def456").Return(&FileStore{
+		FileMD5: "def456", StorePath: "def456.zip", StorageType: StorageOSS,
+	}, nil)
+	d.repo.On("FindChunkRecords", ctx, "def456", int64(4096)).Return([]*ChunkRecord{}, nil)
+	d.cloudStore.On("PresignGetURL", ctx, "def456.zip", time.Hour).
+		Return("http://oss/def456.zip", nil).Once()
+
+	plan, err := d.uc.GetDownloadPlan(ctx, 100, 8)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), plan.TotalChunks)
+	assert.Len(t, plan.Chunks, 1)
+	assert.Equal(t, "http://oss/def456.zip", plan.Chunks[0].DownloadURL)
+	d.repo.AssertExpectations(t)
+	d.cloudStore.AssertExpectations(t)
+}
+
 // ---------------------------------------------------------------------------
 // GetDiskUsage tests
 // ---------------------------------------------------------------------------
@@ -1165,11 +1206,29 @@ func TestMaybeEvictToCloud_TriggersWhenAboveThreshold(t *testing.T) {
 		{FileMD5: "file1", StorePath: "file1.bin", Size: 500 * 1024 * 1024},
 		{FileMD5: "file2", StorePath: "file2.bin", Size: 500 * 1024 * 1024},
 	}, nil)
+	d.repo.On("FindLRUStores", ctx, StorageScattered, 100).Return([]*FileStore{}, nil)
 	d.mq.On("SendCloudMigrateMessage", ctx, mock.AnythingOfType("*biz.CloudMigrateMessage")).Return(nil)
 
 	d.uc.maybeEvictToCloud(ctx, 9*1024*1024*1024) // 9 GB > 8 GB threshold
 
 	d.mq.AssertCalled(t, "SendCloudMigrateMessage", ctx, mock.Anything)
+}
+
+func TestMaybeEvictToCloud_IncludesScatteredCandidates(t *testing.T) {
+	d := newTestDeps()
+	ctx := context.Background()
+
+	d.repo.On("FindLRUStores", ctx, StorageLocal, 100).Return([]*FileStore{}, nil)
+	d.repo.On("FindLRUStores", ctx, StorageScattered, 100).Return([]*FileStore{
+		{FileMD5: "scatter-1", StorePath: "scatter-1.bin", Size: 800 * 1024 * 1024},
+	}, nil)
+	d.mq.On("SendCloudMigrateMessage", ctx, mock.MatchedBy(func(msg *CloudMigrateMessage) bool {
+		return msg.FileMD5 == "scatter-1"
+	})).Return(nil).Once()
+
+	d.uc.maybeEvictToCloud(ctx, 9*1024*1024*1024)
+
+	d.mq.AssertExpectations(t)
 }
 
 func TestMaybeEvictToCloud_NoOp_BelowThreshold(t *testing.T) {
@@ -1489,102 +1548,6 @@ func (m *MockErasureEncoder) ShardChecksum(path string) (string, error) {
 // ---------------------------------------------------------------------------
 // Erasure coding tests
 // ---------------------------------------------------------------------------
-
-func TestMergeChunks_WithErasureCoding(t *testing.T) {
-	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("Close").Return(nil).Maybe()
-	cloudStore := new(MockCloudStorage)
-	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	ecEnc := new(MockErasureEncoder)
-	ecCfg := &ErasureConfig{DataShards: 4, ParityShards: 2, MinFileSize: 100}
-
-	uc := NewFileUsecase(repo, userClient, mq, cloudStore, defaultStorageCfg, ecCfg, ecEnc, "/tmp/test-store", log.DefaultLogger)
-	ctx := context.Background()
-
-	// Setup standard merge flow
-	repo.On("FindStoreByMD5", ctx, "ecmd5").Return(nil, errors.New("not found"))
-	repo.On("AcquireMergeLock", ctx, "ecmd5", mock.Anything).Return(true, nil)
-	repo.On("ReleaseMergeLock", ctx, "ecmd5").Return(nil)
-	repo.On("FindStoreByMD5AndStatus", ctx, "ecmd5", "completed").Return(nil, errors.New("not found"))
-	repo.On("CreateStoreWithStatus", ctx, mock.AnythingOfType("*biz.FileStore")).Return(&FileStore{
-		ID: 100, FileMD5: "ecmd5", StorePath: "ecmd5.bin", StorageType: StorageLocal, UploadStatus: "uploading", RefCount: 1,
-	}, nil)
-	repo.On("CountUploadedChunks", ctx, "ecmd5").Return(int32(2), nil)
-	repo.On("MergeChunkData", ctx, "ecmd5", "big.bin", int32(2)).Return("/tmp/test-store/ecmd5.bin", nil)
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
-	repo.On("IncrDiskUsage", ctx, "local", int64(2048)).Return(nil)
-
-	// Erasure coding: Encode is called, returns 6 shards
-	shardPaths := []string{"/tmp/test-store/ecmd5.shard.0", "/tmp/test-store/ecmd5.shard.1", "/tmp/test-store/ecmd5.shard.2", "/tmp/test-store/ecmd5.shard.3", "/tmp/test-store/ecmd5.shard.4", "/tmp/test-store/ecmd5.shard.5"}
-	ecEnc.On("Encode", "/tmp/test-store/ecmd5.bin", "/tmp/test-store", "ecmd5", 4, 2).Return(shardPaths, nil)
-	ecEnc.On("ShardChecksum", mock.Anything).Return("shardmd5", nil)
-	repo.On("CreateErasureShard", ctx, mock.AnythingOfType("*biz.ErasureShard")).Return(nil)
-
-	// Storage type should become local_ec
-	repo.On("UpdateStorageLocation", ctx, "ecmd5", StorageLocalEC, "ecmd5.bin").Return(nil)
-	repo.On("UpdateStoreStatus", ctx, int64(100), "completed").Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{ID: 200}, nil)
-	repo.On("ClearChunkInfo", ctx, "ecmd5").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(1), int64(2048)).Return(nil)
-
-	file, err := uc.MergeChunks(ctx, 1, 0, "big.bin", "ecmd5", 2048, 2)
-	assert.NoError(t, err)
-	assert.NotNil(t, file)
-
-	// Verify CreateErasureShard was called 6 times
-	repo.AssertNumberOfCalls(t, "CreateErasureShard", 6)
-	ecEnc.AssertCalled(t, "Encode", "/tmp/test-store/ecmd5.bin", "/tmp/test-store", "ecmd5", 4, 2)
-}
-
-func TestMergeChunks_ErasureSkippedBelowMinSize(t *testing.T) {
-	repo := new(MockFileRepo)
-	userClient := new(MockUserClient)
-	mq := new(MockMessageProducer)
-	mq.On("SendCloudMigrateMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("SendThumbnailMessage", mock.Anything, mock.Anything).Return(nil).Maybe()
-	mq.On("Close").Return(nil).Maybe()
-	cloudStore := new(MockCloudStorage)
-	cloudStore.On("Put", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
-
-	ecEnc := new(MockErasureEncoder)
-	ecCfg := &ErasureConfig{DataShards: 4, ParityShards: 2, MinFileSize: 10000} // file too small
-
-	uc := NewFileUsecase(repo, userClient, mq, cloudStore, defaultStorageCfg, ecCfg, ecEnc, "/tmp/test-store", log.DefaultLogger)
-	ctx := context.Background()
-
-	repo.On("FindStoreByMD5", ctx, "small").Return(nil, errors.New("not found"))
-	repo.On("AcquireMergeLock", ctx, "small", mock.Anything).Return(true, nil)
-	repo.On("ReleaseMergeLock", ctx, "small").Return(nil)
-	repo.On("FindStoreByMD5AndStatus", ctx, "small", "completed").Return(nil, errors.New("not found"))
-	repo.On("CreateStoreWithStatus", ctx, mock.AnythingOfType("*biz.FileStore")).Return(&FileStore{
-		ID: 50, FileMD5: "small", StorePath: "small.txt", StorageType: StorageLocal, UploadStatus: "uploading", RefCount: 1,
-	}, nil)
-	repo.On("CountUploadedChunks", ctx, "small").Return(int32(1), nil)
-	repo.On("MergeChunkData", ctx, "small", "tiny.txt", int32(1)).Return("/tmp/test-store/small.txt", nil)
-	repo.On("GetDiskUsage", ctx, "local").Return(int64(0), nil)
-	repo.On("IncrDiskUsage", ctx, "local", int64(50)).Return(nil)
-
-	// No erasure coding, storage stays "local"
-	repo.On("UpdateStorageLocation", ctx, "small", StorageLocal, "small.txt").Return(nil)
-	repo.On("UpdateStoreStatus", ctx, int64(50), "completed").Return(nil)
-	repo.On("Create", ctx, mock.AnythingOfType("*biz.File")).Return(&File{ID: 300}, nil)
-	repo.On("ClearChunkInfo", ctx, "small").Return(nil)
-	userClient.On("UpdateStorageUsed", ctx, int64(1), int64(50)).Return(nil)
-
-	file, err := uc.MergeChunks(ctx, 1, 0, "tiny.txt", "small", 50, 1)
-	assert.NoError(t, err)
-	assert.NotNil(t, file)
-
-	// Encode should NOT be called
-	ecEnc.AssertNotCalled(t, "Encode")
-	// Storage location should be "local", not "local_ec"
-	repo.AssertCalled(t, "UpdateStorageLocation", ctx, "small", StorageLocal, "small.txt")
-}
 
 func TestOpenLocalFile_EC_Reconstruct(t *testing.T) {
 	d := newTestDeps()

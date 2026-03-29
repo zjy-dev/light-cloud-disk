@@ -3,7 +3,7 @@ package data
 import (
 	"context"
 	"os"
-	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,13 +17,24 @@ const (
 	mqShutdownTimeout = 10 * time.Second
 )
 
-// NewMessageProducer creates a goroutine-backed message queue.
+// NewMessageProducer creates a Kafka-backed producer when KAFKA_BROKERS is set,
+// otherwise falls back to the goroutine-backed in-process queue.
 func NewMessageProducer(
 	repo biz.FileRepo,
 	cloudStore biz.CloudStorage,
 	storeDir string,
 	logger log.Logger,
 ) (biz.MessageProducer, func(), error) {
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers != "" {
+		cloudMigrateTopic := "cloud-migrate"
+		thumbnailTopic := "file-thumbnail"
+		p := newKafkaProducer(strings.Split(brokers, ","), cloudMigrateTopic, thumbnailTopic, logger)
+		cleanup := func() {
+			_ = p.Close()
+		}
+		return p, cleanup, nil
+	}
 	mq, cleanup := newGoroutineMQ(repo, cloudStore, storeDir, logger)
 	return mq, cleanup, nil
 }
@@ -147,41 +158,9 @@ func (mq *goroutineMQ) handleCloudMigrate(msg *biz.CloudMigrateMessage) error {
 	ctx := context.Background()
 
 	mq.log.Infof("goroutine-mq: cloud-migrate md5=%s key=%s size=%d", msg.FileMD5, msg.SourceKey, msg.FileSize)
-
-	store, err := mq.repo.FindStoreByMD5(ctx, msg.FileMD5)
-	if err != nil {
+	if err := migrateFileStoreToCloud(ctx, mq.repo, mq.cloudStore, mq.storeDir, msg, mq.log); err != nil {
 		return err
 	}
-
-	if store.StorageType != biz.StorageLocal {
-		mq.log.Warnf("goroutine-mq: skipping cloud-migrate for %s (already on %s)", msg.FileMD5, store.StorageType)
-		return nil
-	}
-
-	// 1) Read from local storage
-	localPath := filepath.Join(mq.storeDir, msg.SourceKey)
-	f, err := os.Open(localPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// 2) Upload to OSS
-	if err := mq.cloudStore.Put(ctx, msg.SourceKey, f, msg.FileSize); err != nil {
-		return err
-	}
-
-	// 3) Update DB: storage_type -> oss
-	if err := mq.repo.UpdateStorageLocation(ctx, msg.FileMD5, biz.StorageOSS, msg.SourceKey); err != nil {
-		return err
-	}
-
-	// 4) Delete local file
-	_ = os.Remove(localPath)
-
-	// 5) Decrease primary disk usage counter
-	_ = mq.repo.IncrDiskUsage(ctx, "local", -msg.FileSize)
-
-	mq.log.Infof("goroutine-mq: cloud-migrate done for md5=%s, moved %d bytes to OSS", msg.FileMD5, msg.FileSize)
+	mq.log.Infof("goroutine-mq: cloud-migrate done for md5=%s", msg.FileMD5)
 	return nil
 }

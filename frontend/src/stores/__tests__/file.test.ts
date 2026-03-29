@@ -10,7 +10,7 @@ vi.mock('@/api/file', () => ({
     renameFile: vi.fn(),
     deleteFiles: vi.fn(),
     moveFiles: vi.fn(),
-    getDownloadURL: vi.fn(),
+    getDownloadPlan: vi.fn(),
   },
 }))
 
@@ -261,17 +261,72 @@ describe('file store', () => {
   })
 
   it('downloadFile opens URL in new tab', async () => {
-    vi.mocked(fileApi.getDownloadURL).mockResolvedValue({
-      data: { downloadUrl: 'https://cdn.example.com/file.zip', fileName: 'file.zip' },
+    vi.mocked(fileApi.getDownloadPlan).mockResolvedValue({
+      data: {
+        totalChunks: 1,
+        fileName: 'file.zip',
+        chunks: [{ chunkIndex: 0, downloadUrl: 'https://cdn.example.com/file.zip', nodeAddr: '10.0.0.1:9003', size: 1024 }],
+      },
     } as never)
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
 
     const store = useFileStore()
     await store.downloadFile(7)
 
-    expect(fileApi.getDownloadURL).toHaveBeenCalledWith(7)
+    expect(fileApi.getDownloadPlan).toHaveBeenCalledWith(7)
     expect(openSpy).toHaveBeenCalledWith('https://cdn.example.com/file.zip', '_blank')
     openSpy.mockRestore()
+  })
+
+  it('downloadFile falls back to backup URL for direct chunk downloads', async () => {
+    const fetchMock = vi.fn()
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)) })
+
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem('token', 'token-123')
+
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download')
+    const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const appendChildSpy = vi.spyOn(document.body, 'appendChild').mockImplementation((node) => node)
+    const removeChildSpy = vi.spyOn(document.body, 'removeChild').mockImplementation((node) => node)
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    vi.mocked(fileApi.getDownloadPlan).mockResolvedValue({
+      data: {
+        totalChunks: 1,
+        fileName: 'file.zip',
+        chunks: [
+          {
+            chunkIndex: 0,
+            chunkSize: 1024,
+            checksum: 'sum-0',
+            downloadUrl: 'http://10.0.0.1:9003/api/v1/chunks/abc123/0',
+            backupUrls: ['/api/v1/file/chunks/abc123/0/recovery?file_size=1024'],
+          },
+        ],
+      },
+    } as never)
+
+    const store = useFileStore()
+    await store.downloadFile(7)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://10.0.0.1:9003/api/v1/chunks/abc123/0', {
+      headers: { Authorization: 'Bearer token-123' },
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/file/chunks/abc123/0/recovery?file_size=1024', {
+      headers: { Authorization: 'Bearer token-123' },
+    })
+
+    clickSpy.mockRestore()
+    appendChildSpy.mockRestore()
+    removeChildSpy.mockRestore()
+    createObjectURLSpy.mockRestore()
+    revokeObjectURLSpy.mockRestore()
+    localStorage.removeItem('token')
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   it('toggleSelect adds and removes IDs', () => {

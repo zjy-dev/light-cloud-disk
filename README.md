@@ -3,7 +3,7 @@
 [![CI](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/ci.yml)
 [![Release](https://github.com/zjy-dev/light-cloud-disk/actions/workflows/release.yml/badge.svg)](https://github.com/zjy-dev/light-cloud-disk/releases)
 
-基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。支持 MySQL / SQLite 可切换数据库，本地磁盘主存 + LRU 冷迁移到阿里云 OSS，Reed-Solomon 纠删码保障本地数据可靠性，Redis 分布式锁保障并发上传安全。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
+基于 Kratos v2 的微服务云存储系统，采用 gRPC 服务拆分 + Gin API 网关 + Consul 服务发现架构。支持 MySQL / SQLite 可切换数据库，本地磁盘作为主存，按 LRU 异步冷迁移到阿里云 OSS；文件分块打散上传到多个 file-service 实例（绕过网关），下载时优先直连分块实例，实例故障时通过 Reed-Solomon 恢复分片和 OSS 兜底恢复。Redis 分布式锁保障并发上传安全，Kafka 负责异步冷迁移。前端使用 Vue 3 + TypeScript + Tailwind CSS 构建。
 
 **Monorepo 结构**: 后端 Go 代码在项目根目录，前端 Vue 3 SPA 在 `frontend/` 目录。
 
@@ -13,15 +13,16 @@
                     ┌──────────────────────┐
                     │    Gin API Gateway   │
                     │     (HTTP :8080)     │
-                    │   JWT / CORS / Hash  │
+                    │  JWT / CORS / Hash   │
+                    │  UploadPlan 分发      │
                     └────┬────────────┬────┘
                          │  gRPC      │  gRPC
                ┌─────────┘            └──────────┐
                ▼                                  ▼
     ┌─────────────────────┐           ┌─────────────────────┐
-    │   User Service      │           │   File Service      │
+    │   User Service      │           │   File Service ×N   │
     │   (gRPC :9001)      │◄──gRPC────│   (gRPC :9002)      │
-    │   Kratos v2         │           │   Kratos v2         │
+    │   Kratos v2         │           │   (HTTP :9003)      │
     └────────┬────────────┘           └──┬─────┬─────┬──────┘
              │                           │     │     │
              ▼                           ▼     ▼     ▼
@@ -29,18 +30,19 @@
     │  MySQL / SQLite │           │  DB  │ │Redis│ │ 本地磁盘   │
     └─────────────────┘           └──────┘ └─────┘ └───────────┘
                                                         │
-     ← ─ ─ ─  Consul 服务发现  ─ ─ ─ →            goroutine MQ
+     ← ─ ─ ─  Consul 服务发现  ─ ─ ─ →             Kafka MQ
                                                         │
                                                  ┌──────┴──────┐
-                                                 │ 阿里云 OSS   │
-                                                 └─────────────┘
+  Client ──── PUT chunks ────────────────────►   │ 阿里云 OSS   │
+  (直传 file-service HTTP, 绕过网关)              └─────────────┘
 ```
 
 - **User Service**: 用户注册/登录、信息管理、存储配额 (gRPC-only, Kratos v2)
-- **File Service**: 分块上传、秒传、文件管理、回收站、分享、冷热分层存储、纠删码 (gRPC-only, Kratos v2)
-- **API Gateway**: HTTP 路由、JWT 认证、CORS、MD5 一致性哈希路由、gRPC 代理 (Gin)
-- **阿里云 OSS**: 冷数据归档，由 goroutine MQ 异步迁移
-- **Consul**: 服务注册与发现
+- **File Service**: 分块打散上传/下载、秒传、文件管理、回收站、分享、冷热分层存储、每块恢复分片生成与重建 (gRPC + HTTP, Kratos v2)
+- **API Gateway**: HTTP 路由、JWT 认证、CORS、MD5 一致性哈希路由、UploadPlan 分发、gRPC 代理 (Gin)
+- **Kafka**: 异步消息队列 (cloud-migrate / file-thumbnail)，本地开发未配置时可降级到 goroutine channel
+- **阿里云 OSS**: 冷数据归档，由 Kafka 消费者异步迁移
+- **Consul**: 服务注册与发现，HTTP 端口元数据
 
 ## 技术栈
 
@@ -54,7 +56,7 @@
 | ORM | GORM | v1.25.12 |
 | 数据库 | MySQL 8.0 / SQLite (DB_DRIVER 切换) | - |
 | 缓存 / 分布式锁 | Redis | v8.11.5 |
-| 消息队列 | 进程内 goroutine channel | - |
+| 消息队列 | Apache Kafka (KRaft，开发环境可降级 goroutine channel) | 3.9 |
 | 对象存储 (冷) | 阿里云 OSS | SDK v1.4 |
 | 纠删码 | klauspost/reedsolomon (Reed-Solomon 4+2) | v1.13.3 |
 | 依赖注入 | Wire | v0.6.0 |
@@ -80,16 +82,18 @@
 - [x] 跨服务存储用量更新 (UpdateStorageUsed RPC)
 
 ### 文件服务
-- [x] 分块上传 (大文件支持，5MB/块)
+- [x] 分块打散上传 (大文件分块直传到多个 file-service 实例，绕过网关)
 - [x] 秒传 (基于 MD5 去重)
 - [x] 断点续传 (Redis SET 记录上传状态)
 - [x] 预签名分块上传 (客户端直传 OSS，支持跨设备断点续传)
-- [x] 上传模式自动切换 (direct: 经后端 / presigned: 客户端直传 OSS)
-- [x] LRU 自动冷迁移 (本地磁盘超阈值 → goroutine MQ → 迁入 OSS)
-- [x] Reed-Solomon 纠删码 (4+2 编码，本地大文件自动编码，下载时透明重建)
+- [x] 上传模式自动切换 (direct: 经后端打散 / presigned: 客户端直传 OSS)
+- [x] UploadPlan 分发 (网关生成分块→实例分配方案, 客户端并行上传)
+- [x] LRU 自动冷迁移 (本地磁盘超阈值 → Kafka → 迁入 OSS)
+- [x] Kafka 消息队列 (cloud-migrate / file-thumbnail, 开发环境未配置时降级 goroutine channel)
+- [x] 分块恢复分片 (每个直传 chunk 上传后立即生成 Reed-Solomon 恢复分片并写入 OSS)
 - [x] Redis 分布式锁 (分块级 SetNX + Lua 释放，合并级 SetNX 防重复)
 - [x] 可切换数据库 (MySQL / SQLite via DB_DRIVER)
-- [x] 本地文件流式下载 (StreamFileContent server-streaming RPC)
+- [x] 并行下载 (GetDownloadPlan → 多实例并发获取分块，浏览器端重组)
 - [x] 磁盘满保护 (CheckUpload 检测 → 自动切换预签名上传)
 - [x] 磁盘用量查询 (GetDiskUsage API)
 - [x] 文件夹管理 (树形结构)
@@ -106,6 +110,9 @@
 - [x] gRPC 代理 (HTTP → gRPC 协议转换)
 - [x] Consul 服务发现 (自动发现后端服务)
 - [x] MD5 一致性哈希路由 (上传请求按文件 MD5 路由到固定 File Service 实例)
+- [x] UploadPlan 分发 (pickN 选择多实例, 生成分块→实例分配方案)
+- [x] 一致性哈希容错 (不健康实例 15s 冷却剔除, 过期自动重试)
+- [x] 下载恢复代理 (主分块实例失败时回退到网关 recovery 端点重建分块)
 - [x] 预签名上传代理 (4 个端点: init / report-part / complete / abort)
 
 ## 项目结构
@@ -277,16 +284,15 @@ go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 |------|------|------|
 | GET | /api/v1/user/info | 获取用户信息 |
 | PUT | /api/v1/user/info | 更新用户信息 |
-| POST | /api/v1/file/check-upload | 秒传/断点续传检查 |
-| POST | /api/v1/file/upload-chunk | 上传文件分块 |
-| POST | /api/v1/file/merge-chunks | 合并分块 |
+| POST | /api/v1/file/check-upload | 秒传/断点续传检查 (返回 UploadPlan) |
+| POST | /api/v1/file/complete-upload | 完成上传 (所有分块上传后调用) |
+| GET | /api/v1/file/download-plan/:file_id | 获取下载计划 (分块位置列表) |
 | GET | /api/v1/files | 文件列表 |
 | POST | /api/v1/file/folder | 创建文件夹 |
 | PUT | /api/v1/file/rename | 重命名文件 |
 | DELETE | /api/v1/files | 删除文件 (移入回收站) |
 | PUT | /api/v1/file/move | 移动文件 |
 | GET | /api/v1/file/download/:file_id | 获取下载链接 (预签名 URL) |
-| GET | /api/v1/file/stream/:file_id | 流式下载 (本地模式) |
 | GET | /api/v1/files/search | 搜索文件 |
 | GET | /api/v1/disk-usage | 磁盘用量 |
 | GET | /api/v1/trash | 回收站列表 |
@@ -295,35 +301,45 @@ go test -v ./app/gateway/internal/middleware/   # 网关中间件测试
 | POST | /api/v1/share | 创建分享 |
 
 说明：
-- `POST /api/v1/file/upload-chunk` 使用 `multipart/form-data` 上传分块二进制（字段：`file_md5`、`chunk_index`、`chunk_size`、`chunk_file`）。
+- 分块直传 file-service HTTP 端口 (9003): `PUT /api/v1/chunks/:md5/:index`, `GET /api/v1/chunks/:md5/:index`
+- 分块恢复端点: `GET /api/v1/file/chunks/:md5/:index/recovery?file_size=...`（由网关代理到健康 file-service 实例执行重建）
+- 客户端根据 CheckUpload 返回的 UploadPlan，直接上传分块到对应的 file-service 实例
 
 ## 服务通信
 
 ```
 Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
-                    │                    ▲
-                    │──gRPC──▶ File Service ──gRPC──┘
-                                (UpdateStorageUsed)
-                                    │
-                             goroutine MQ
-                                    │
-                                    ▼
-                              阿里云 OSS
+   │                 │                    ▲
+   │                 │──gRPC──▶ File Service ×N ──gRPC──┘
+   │                               (UpdateStorageUsed)
+   │                                    │
+   │── PUT /api/v1/chunks ─────▶  HTTP :9003  (直传分块)
+   │── GET /api/v1/chunks ◀────   HTTP :9003  (直下分块)
+                                        │
+                                    Kafka MQ
+                                        │
+                                        ▼
+                                  阿里云 OSS
 ```
 
 - Gateway 通过 Consul 发现 `user-service` 和 `file-service`
+- CheckUpload 返回 UploadPlan，客户端直传分块到 file-service HTTP 端口
 - File Service 通过 Consul 发现 `user-service`，调用 `UpdateStorageUsed` 更新存储用量
-- File Service 合并后存入本地磁盘，超阈值时通过 goroutine MQ 异步迁移到 OSS
-- 下载时按 `storage_type` 签发 OSS 预签名 URL 或本地流式代理
+- 直传分块写入本地后立即生成恢复分片并上传 OSS，供故障恢复使用
+- 超阈值时通过 Kafka 异步迁移到 OSS (开发环境无 Kafka 时降级为 goroutine channel)
+- 下载时 GetDownloadPlan 返回主下载地址和备份恢复地址，客户端并行下载并在浏览器重组
 
 ## 消息队列
 
 | Topic | 生产者 | 消费者 | 用途 |
 |-------|--------|--------|------|
-| cloud-migrate | FileService (LRU 淘汰) | goroutine MQ | 本地磁盘 → 阿里云 OSS 冷迁移 |
-| file-thumbnail | FileService | goroutine MQ | 生成文件缩略图 |
+| cloud-migrate | FileService (LRU 淘汰) | Kafka Consumer | 本地磁盘 → 阿里云 OSS 冷迁移 |
+| file-thumbnail | FileService | Kafka Consumer | 生成文件缩略图 |
 
-- 进程内 goroutine channel (256 缓冲)，无需外部 MQ 依赖
+- 默认使用 Apache Kafka 3.9 (KRaft 模式，单节点)
+- `KAFKA_BROKERS` 环境变量为空时，开发环境自动降级为进程内 goroutine channel (256 缓冲)
+- 生产者使用 `segmentio/kafka-go` 的 `kafka.Writer`，key 为文件 MD5
+- 消费者实现 Kratos `transport.Server` 接口，随服务生命周期启停
 
 ## 环境变量
 
@@ -349,14 +365,17 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 | ERASURE_DATA_SHARDS | 纠删码数据分片数 | file | 4 |
 | ERASURE_PARITY_SHARDS | 纠删码校验分片数 | file | 2 |
 | ERASURE_MIN_FILE_SIZE | 纠删码最小文件大小 (字节) | file | 10485760 (10MB) |
+| KAFKA_BROKERS | Kafka broker 地址 (逗号分隔, 空则降级为 goroutine) | file | localhost:9092 |
+| FILE_HTTP_ADDR | file-service 分块直传 HTTP 监听地址 | file | :9003 |
 
 ## 测试覆盖
 
 | 模块 | 测试类型 | 测试数 | 说明 |
 |------|----------|--------|------|
 | app/user/internal/biz | 单元测试 | 14 | Mock UserRepo |
-| app/file/internal/biz | 单元测试 | 51 | Mock FileRepo + UserClient + MessageProducer + CloudStorage + ErasureEncoder |
+| app/file/internal/biz | 单元测试 | 59 | Mock FileRepo + UserClient + MessageProducer + CloudStorage + ErasureEncoder |
 | app/gateway/internal/handler | 单元测试 | 15 | Mock gRPC 客户端 |
+| app/gateway/internal/client | 单元测试 | 7 | 一致性哈希 + 容错 |
 | app/gateway/internal/middleware | 单元测试 | 9 | JWT + CORS |
 | app/user/internal/data | 集成测试 | 5 | 需要 MySQL (build tag) |
 | app/file/internal/data | 集成测试 | 7 | 需要 MySQL + Redis (build tag) |
@@ -365,8 +384,8 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 
 - 登录 / 注册页面
 - 文件浏览器 (网格/列表双视图，排序，面包屑导航)
-- 文件上传 (分块上传，进度面板，秒传/断点续传)
-- 文件管理 (新建文件夹、重命名、删除、移动、下载)
+- 文件上传 (分块打散上传到多实例，进度面板，秒传/断点续传)
+- 文件管理 (新建文件夹、重命名、删除、移动、并行下载)
 - 回收站 (恢复、彻底删除、清空)
 - 文件分享 (创建分享链接、设密码、过期时间)
 - 公开分享页面 (密码验证、文件下载)
@@ -384,6 +403,8 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - [预签名分块上传](docs/presigned-upload.md)
 - [服务发现与通信](docs/service-discovery.md)
 - [消息队列集成](docs/message-queue.md)
+- [Kafka 消息队列](docs/kafka.md)
+- [分块打散存储](docs/scattered-storage.md)
 - [分布式锁](docs/distributed-locking.md)
 - [纠删码](docs/erasure-coding.md)
 - [CI/CD 配置](docs/ci-cd.md)
@@ -392,14 +413,26 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 
 ## 更新日志
 
+### v8.0.0 (2026)
+- **分块打散存储**: 文件分块直传到多个 file-service 实例 (HTTP :9003)，绕过网关瓶颈
+- **恢复分片链路**: 直传 chunk 后立即生成 Reed-Solomon 恢复分片并写入 OSS，下载失败时通过 recovery URL 重建分块
+- **Kafka 消息队列**: Apache Kafka 3.9 (KRaft) 负责异步冷迁移，开发环境无 Kafka 时自动降级
+- **并行下载**: GetDownloadPlan API 返回分块位置，浏览器端并行下载并重组
+- **一致性哈希容错**: 不健康实例临时剔除 15s (cooldown)，过期后自动重试
+- **UploadPlan 分发**: Gateway 使用 pickN 选择多实例，生成分块→实例分配方案
+- CompleteUpload / GetDownloadPlan 替代 MergeChunks / GetDownloadURL
+- chunk_records 表记录分块在各实例的分布
+- File Service 新增 HTTP 端口 (Gin, JWT, Kratos transport.Server)
+- 前端 useUpload 重写为 fetch PUT 直传，useDownload 新增并行下载
+
 ### v7.0.0 (2026)
-- **分布式架构重构**: 移除 SeaweedFS / Kafka / file-worker，统一为本地磁盘 + 阿里云 OSS 单模式存储
-- **Reed-Solomon 纠删码**: 本地大文件 4+2 编码，容忍任意 2 片损坏，下载时透明重建
-- **Redis 分布式锁**: 分块级 SetNX + Lua 释放，合并级 SetNX 防重复合并，支持并发安全上传
+- **分布式架构重构**: 统一为本地磁盘主存 + 阿里云 OSS 冷存，移除 SeaweedFS / file-worker 双路径
+- **Reed-Solomon 纠删码**: 保留 legacy local_ec 能力，并为散列分块引入恢复分片元数据
+- **Redis 分布式锁**: 分块级 SetNX + Lua 释放，CompleteUpload 级 SetNX 防重复完成，支持并发安全上传
 - **上传状态机**: FileStore 增加 `upload_status` (uploading/complete)，秒传仅匹配已完成文件
 - **数据模型优化**: `erasure_shards` 表存储分片元数据，MD5 改为 (file_md5, size) 联合唯一索引
 - 移除双模式部署，MySQL 为默认数据库 (SQLite 可选)
-- goroutine MQ 为唯一消息队列实现
+- Kafka 为默认消息队列实现，开发环境保留 goroutine 降级路径
 - 统一 Dockerfile (SERVICE=user|file|gateway)
 - 单 .env 配置文件，新增 ERASURE_* 环境变量
 
@@ -454,19 +487,8 @@ Client ──HTTP──▶ Gateway ──gRPC──▶ User Service
 - 基础文件上传/下载功能
 
 
-本项目旨在充分利用服务器本地磁盘来节省成本. 本地磁盘作为主存，通过自定义逻辑实现秒传、分块续传和断点续传. 大文件使用 Reed-Solomon 纠删码 (4+2) 编码，容忍任意 2 片损坏，下载时透明重建.
+本项目以服务器本地磁盘为主存，通过 UploadPlan + 一致性哈希把分块分散到多个 file-service 实例，避免网关成为上传和下载瓶颈。每个直传 chunk 落盘后都会立即生成恢复分片并写入 OSS；客户端下载时优先直连主分块地址，失败后自动回退到 recovery URL，由健康实例从恢复分片重建该 chunk。
 
-我给项目设置了最大可在本地磁盘存储多少数据. 在 Redis 中维护当前的用量, 当用量超过一定阈值后, 用 LRU 淘汰本地的冷文件并用消息队列异步将冷数据上云并更新 Redis 当前用量. Redis 冷启动或断线重连后会做一次全表查询查实际用量.
+Redis 维护本地磁盘用量和上传中的分块状态，超过阈值时通过 Kafka 异步触发 LRU 冷迁移。磁盘不足时，后端直接切换到预签名 OSS multipart 上传模式，不阻塞主流程。
 
-上传时如果判断本地磁盘不够用后端就会预签一个 OSS 的上传 URL 给前端用.
-
-秒传: 如果查询 Redis 发现 md5 和大小都相同且已完成上传的文件(这在数据库中要建立联合索引), 就会触发秒传, 直接在 MySQL 中把这个文件逻辑上复制一份即可(无需优化, 秒传是少量场景, 限流即可). Redis 冷启动时从 MySQL 中获取当前的文件列表的 md5 和大小列表(设置一个最大的获取值, 如果太多了就按照上次访问时间排序只获取一部分).
-
-分块上传和断点续传:
-
-给每个文件分配一个 id, 用 Redis 的 SET 维护已经上传的分块块号, 用分布式锁 (SetNX + Lua 释放) 保证分块上传和合并的并发安全. 所有分块上传完后合并并把文件记录写进 MySQL, 再把 md5 和大小写进 Redis 中即可.
-
-> 如果有恶意的人上传了很多分块, 但是一个都没有传完, 导致服务器本地磁盘全是垃圾怎么办?
-
-
-文件删除:
+秒传以 `(file_md5, size)` 的已完成 FileStore 为准，命中后只创建新的逻辑文件记录，不复制物理数据。断点续传则通过 chunk_records 和 Redis 分块状态共同确认缺失块，只重传未完成部分。

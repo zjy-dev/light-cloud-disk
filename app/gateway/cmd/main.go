@@ -63,10 +63,11 @@ func main() {
 		auth.GET("/user/info", userHandler.GetUserInfo)
 		auth.PUT("/user/info", userHandler.UpdateUserInfo)
 
-		// File routes — direct upload (Mode A default)
+		// File routes — direct upload (scattered mode, chunks go directly to file-service HTTP)
 		auth.POST("/file/check-upload", fileHandler.CheckUpload)
-		auth.POST("/file/upload-chunk", fileHandler.UploadChunk)
-		auth.POST("/file/merge-chunks", fileHandler.MergeChunks)
+		auth.POST("/file/complete-upload", fileHandler.CompleteUpload)
+		auth.GET("/file/download-plan/:file_id", fileHandler.GetDownloadPlan)
+		auth.GET("/file/chunks/:md5/:index/recovery", fileHandler.RecoverChunk)
 
 		// File routes — presigned multipart upload (Mode B / disk-full fallback)
 		auth.POST("/file/presigned-upload", fileHandler.InitPresignedUpload)

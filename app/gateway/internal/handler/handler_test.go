@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,7 +68,8 @@ func (m *mockUserClient) UpdateStorageUsed(ctx context.Context, in *userv1.Updat
 type mockFileClient struct {
 	checkUploadFn             func(ctx context.Context, in *filev1.CheckUploadRequest, opts ...grpc.CallOption) (*filev1.CheckUploadReply, error)
 	uploadChunkFn             func(ctx context.Context, in *filev1.UploadChunkRequest, opts ...grpc.CallOption) (*filev1.UploadChunkReply, error)
-	mergeChunksFn             func(ctx context.Context, in *filev1.MergeChunksRequest, opts ...grpc.CallOption) (*filev1.MergeChunksReply, error)
+	completeUploadFn          func(ctx context.Context, in *filev1.CompleteUploadRequest, opts ...grpc.CallOption) (*filev1.CompleteUploadReply, error)
+	getDownloadPlanFn         func(ctx context.Context, in *filev1.GetDownloadPlanRequest, opts ...grpc.CallOption) (*filev1.GetDownloadPlanReply, error)
 	listFilesFn               func(ctx context.Context, in *filev1.ListFilesRequest, opts ...grpc.CallOption) (*filev1.ListFilesReply, error)
 	getDownloadURLFn          func(ctx context.Context, in *filev1.GetDownloadURLRequest, opts ...grpc.CallOption) (*filev1.GetDownloadURLReply, error)
 	deleteFileFn              func(ctx context.Context, in *filev1.DeleteFileRequest, opts ...grpc.CallOption) (*filev1.DeleteFileReply, error)
@@ -103,9 +103,16 @@ func (m *mockFileClient) UploadChunk(ctx context.Context, in *filev1.UploadChunk
 	return nil, errors.New("not implemented")
 }
 
-func (m *mockFileClient) MergeChunks(ctx context.Context, in *filev1.MergeChunksRequest, opts ...grpc.CallOption) (*filev1.MergeChunksReply, error) {
-	if m.mergeChunksFn != nil {
-		return m.mergeChunksFn(ctx, in, opts...)
+func (m *mockFileClient) CompleteUpload(ctx context.Context, in *filev1.CompleteUploadRequest, opts ...grpc.CallOption) (*filev1.CompleteUploadReply, error) {
+	if m.completeUploadFn != nil {
+		return m.completeUploadFn(ctx, in, opts...)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockFileClient) GetDownloadPlan(ctx context.Context, in *filev1.GetDownloadPlanRequest, opts ...grpc.CallOption) (*filev1.GetDownloadPlanReply, error) {
+	if m.getDownloadPlanFn != nil {
+		return m.getDownloadPlanFn(ctx, in, opts...)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -257,29 +264,6 @@ func parseJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	err := json.Unmarshal(w.Body.Bytes(), &result)
 	assert.NoError(t, err)
 	return result
-}
-
-func multipartBody(t *testing.T, fields map[string]string, filename string, fileData []byte) (*bytes.Buffer, string) {
-	t.Helper()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	for k, v := range fields {
-		err := writer.WriteField(k, v)
-		assert.NoError(t, err)
-	}
-
-	part, err := writer.CreateFormFile("chunk_file", filename)
-	assert.NoError(t, err)
-
-	_, err = part.Write(fileData)
-	assert.NoError(t, err)
-
-	err = writer.Close()
-	assert.NoError(t, err)
-
-	return body, writer.FormDataContentType()
 }
 
 // --- UserHandler tests ---
@@ -611,16 +595,18 @@ func TestFileHandler_CheckUpload_DiskFull(t *testing.T) {
 	assert.Equal(t, "presigned", result["upload_mode"])
 }
 
-func TestFileHandler_UploadChunk_Success(t *testing.T) {
+func TestFileHandler_GetDownloadPlan_AddsRecoveryBackupURLs(t *testing.T) {
 	fileClient := &mockFileClient{
-		uploadChunkFn: func(_ context.Context, in *filev1.UploadChunkRequest, _ ...grpc.CallOption) (*filev1.UploadChunkReply, error) {
-			assert.Equal(t, "abc123", in.FileMd5)
-			assert.Equal(t, int32(2), in.ChunkIndex)
-			assert.Equal(t, int32(5), in.ChunkSize)
-			assert.Equal(t, []byte("hello"), in.ChunkData)
-			return &filev1.UploadChunkReply{
-				Success:    true,
-				ChunkIndex: in.ChunkIndex,
+		getDownloadPlanFn: func(_ context.Context, _ *filev1.GetDownloadPlanRequest, _ ...grpc.CallOption) (*filev1.GetDownloadPlanReply, error) {
+			return &filev1.GetDownloadPlanReply{
+				FileName:    "file.zip",
+				FileMd5:     "abc123",
+				FileSize:    2048,
+				TotalChunks: 2,
+				Chunks: []*filev1.ChunkLocation{
+					{ChunkIndex: 0, ChunkSize: 1024, DownloadUrl: "http://10.0.0.1:9003/api/v1/chunks/abc123/0", Checksum: "sum-0"},
+					{ChunkIndex: 1, ChunkSize: 1024, DownloadUrl: "http://oss/chunks/abc123/000001.part", Checksum: "sum-1"},
+				},
 			}, nil
 		},
 	}
@@ -629,58 +615,21 @@ func TestFileHandler_UploadChunk_Success(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	body, contentType := multipartBody(t, map[string]string{
-		"file_md5":    "abc123",
-		"chunk_index": "2",
-		"chunk_size":  "5",
-	}, "chunk.part", []byte("hello"))
-	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
-	c.Request.Header.Set("Content-Type", contentType)
+	c.Request, _ = http.NewRequest("GET", "/api/v1/file/download-plan/7", nil)
+	c.Params = gin.Params{{Key: "file_id", Value: "7"}}
+	c.Set("user_id", int64(42))
 
-	h.UploadChunk(c)
+	h.GetDownloadPlan(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	result := parseJSON(t, w)
-	assert.Equal(t, true, result["success"])
-}
-
-func TestFileHandler_UploadChunk_MissingFile(t *testing.T) {
-	h := NewFileHandler(newTestClients(&mockUserClient{}, &mockFileClient{}))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	_ = writer.WriteField("file_md5", "abc123")
-	_ = writer.WriteField("chunk_index", "0")
-	_ = writer.WriteField("chunk_size", "5")
-	_ = writer.Close()
-
-	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-
-	h.UploadChunk(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestFileHandler_UploadChunk_InvalidChunkIndex(t *testing.T) {
-	h := NewFileHandler(newTestClients(&mockUserClient{}, &mockFileClient{}))
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	body, contentType := multipartBody(t, map[string]string{
-		"file_md5":    "abc123",
-		"chunk_index": "bad",
-		"chunk_size":  "5",
-	}, "chunk.part", []byte("hello"))
-	c.Request, _ = http.NewRequest("POST", "/api/v1/file/upload-chunk", body)
-	c.Request.Header.Set("Content-Type", contentType)
-
-	h.UploadChunk(c)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
+	chunks := result["chunks"].([]any)
+	firstChunk := chunks[0].(map[string]any)
+	backupURLs := firstChunk["backupUrls"].([]any)
+	assert.Equal(t, "/api/v1/file/chunks/abc123/0/recovery?file_size=2048", backupURLs[0])
+	secondChunk := chunks[1].(map[string]any)
+	_, hasBackup := secondChunk["backupUrls"]
+	assert.False(t, hasBackup)
 }
 
 func TestFileHandler_GetDiskUsage_Success(t *testing.T) {

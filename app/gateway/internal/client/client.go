@@ -42,6 +42,15 @@ func (sc *ServiceClients) FileClientByKey(key string) filev1.FileServiceClient {
 	return client
 }
 
+// PickNFileHTTPAddrs returns up to n distinct HTTP addresses of file-service
+// instances, selected by consistent-hashing on key, for per-chunk upload routing.
+func (sc *ServiceClients) PickNFileHTTPAddrs(key string, n int) []string {
+	if sc.fileRouter == nil {
+		return nil
+	}
+	return sc.fileRouter.pickN(key, n)
+}
+
 func NewServiceClients() *ServiceClients {
 	r := newRegistry()
 
@@ -82,16 +91,23 @@ type hashRouterEntry struct {
 
 // hashRouter provides consistent hash-based routing to file-service instances.
 // It periodically watches Consul for instance changes and maintains per-address
-// gRPC connections.
+// gRPC connections. Unhealthy instances are temporarily marked and skipped for
+// a cooldown period before being retried.
 type hashRouter struct {
 	serviceName string
 	consulAddr  string
 
-	mu      sync.RWMutex
-	ring    []uint32                    // sorted virtual-node hashes
-	ringMap map[uint32]string           // hash → address
-	clients map[string]*hashRouterEntry // address → gRPC entry
+	mu        sync.RWMutex
+	ring      []uint32                    // sorted virtual-node hashes
+	ringMap   map[uint32]string           // hash → address
+	clients   map[string]*hashRouterEntry // address → gRPC entry
+	httpAddrs map[string]string           // gRPC addr → HTTP addr (host:httpPort)
+
+	// unhealthy tracks temporarily marked-down instances and their retry time.
+	unhealthy map[string]time.Time
 }
+
+const unhealthyCooldown = 15 * time.Second
 
 func newHashRouter(consulAddr, serviceName string) *hashRouter {
 	hr := &hashRouter{
@@ -99,6 +115,8 @@ func newHashRouter(consulAddr, serviceName string) *hashRouter {
 		consulAddr:  consulAddr,
 		ringMap:     make(map[uint32]string),
 		clients:     make(map[string]*hashRouterEntry),
+		httpAddrs:   make(map[string]string),
+		unhealthy:   make(map[string]time.Time),
 	}
 	// Initial population
 	hr.refresh()
@@ -127,10 +145,20 @@ func (hr *hashRouter) refresh() {
 		return
 	}
 
+	type instanceInfo struct {
+		grpcAddr string
+		httpAddr string // host:httpPort, empty if no http_port meta
+	}
+	instances := make([]instanceInfo, 0, len(entries))
 	addrs := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
-		addr := fmt.Sprintf("%s:%d", e.Service.Address, e.Service.Port)
-		addrs[addr] = struct{}{}
+		grpcAddr := fmt.Sprintf("%s:%d", e.Service.Address, e.Service.Port)
+		addrs[grpcAddr] = struct{}{}
+		httpAddr := ""
+		if hp, ok := e.Service.Meta["http_port"]; ok && hp != "" {
+			httpAddr = fmt.Sprintf("%s:%s", e.Service.Address, hp)
+		}
+		instances = append(instances, instanceInfo{grpcAddr: grpcAddr, httpAddr: httpAddr})
 	}
 
 	hr.mu.Lock()
@@ -184,6 +212,24 @@ func (hr *hashRouter) refresh() {
 		}
 	}
 
+	// Rebuild HTTP address map
+	hr.httpAddrs = make(map[string]string, len(instances))
+	for _, inst := range instances {
+		if inst.httpAddr != "" {
+			hr.httpAddrs[inst.grpcAddr] = inst.httpAddr
+		}
+	}
+
+	// Purge expired unhealthy entries; remove entries for instances no longer in Consul
+	now := time.Now()
+	for addr := range hr.unhealthy {
+		if _, ok := addrs[addr]; !ok {
+			delete(hr.unhealthy, addr)
+		} else if now.After(hr.unhealthy[addr]) {
+			delete(hr.unhealthy, addr)
+		}
+	}
+
 	// Log ring rebalance events
 	if len(added) > 0 || len(removed) > 0 {
 		log.Infof("hashRouter: ring rebalanced — instances %d→%d, added=%v, removed=%v",
@@ -204,11 +250,105 @@ func (hr *hashRouter) pick(key string) filev1.FileServiceClient {
 	if idx >= len(hr.ring) {
 		idx = 0
 	}
+
+	now := time.Now()
+	total := len(hr.ring)
+	seen := make(map[string]struct{})
+	for i := range total {
+		pos := (idx + i) % total
+		addr := hr.ringMap[hr.ring[pos]]
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		if t, ok := hr.unhealthy[addr]; ok && now.Before(t) {
+			continue // skip unhealthy until cooldown expires
+		}
+		if entry, ok := hr.clients[addr]; ok {
+			return entry.client
+		}
+	}
+
+	// fallback: try first available (even unhealthy, better than nil)
 	addr := hr.ringMap[hr.ring[idx]]
 	if entry, ok := hr.clients[addr]; ok {
 		return entry.client
 	}
 	return nil
+}
+
+// pickN walks the hash ring from the key's position and returns up to n distinct
+// physical node HTTP addresses, skipping temporarily unhealthy instances.
+func (hr *hashRouter) pickN(key string, n int) []string {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
+	if len(hr.ring) == 0 {
+		return nil
+	}
+
+	h := fnvHash(key)
+	idx := sort.Search(len(hr.ring), func(i int) bool { return hr.ring[i] >= h })
+	if idx >= len(hr.ring) {
+		idx = 0
+	}
+
+	now := time.Now()
+	seen := make(map[string]struct{})
+	var result []string
+	total := len(hr.ring)
+	for i := range total {
+		pos := (idx + i) % total
+		grpcAddr := hr.ringMap[hr.ring[pos]]
+		if _, ok := seen[grpcAddr]; ok {
+			continue
+		}
+		seen[grpcAddr] = struct{}{}
+		if t, ok := hr.unhealthy[grpcAddr]; ok && now.Before(t) {
+			continue
+		}
+		if httpAddr, ok := hr.httpAddrs[grpcAddr]; ok {
+			result = append(result, httpAddr)
+		}
+		if len(result) >= n {
+			break
+		}
+	}
+	return result
+}
+
+// GetHTTPAddrs returns all known HTTP addresses of healthy file-service instances.
+func (hr *hashRouter) GetHTTPAddrs() []string {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+	addrs := make([]string, 0, len(hr.httpAddrs))
+	for _, addr := range hr.httpAddrs {
+		addrs = append(addrs, addr)
+	}
+	return addrs
+}
+
+// MarkUnhealthy temporarily marks a file-service HTTP address as unhealthy
+// for the cooldown period. The instance is skipped in pick/pickN until
+// the cooldown expires, then it's retried.
+func (hr *hashRouter) MarkUnhealthy(httpAddr string) {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	// Find gRPC addr by HTTP addr (reverse lookup)
+	for grpcAddr, ha := range hr.httpAddrs {
+		if ha == httpAddr {
+			hr.unhealthy[grpcAddr] = time.Now().Add(unhealthyCooldown)
+			log.Warnf("hashRouter: marked %s (http=%s) unhealthy for %v", grpcAddr, httpAddr, unhealthyCooldown)
+			return
+		}
+	}
+}
+
+// MarkFileInstanceUnhealthy exposes MarkUnhealthy on ServiceClients.
+func (sc *ServiceClients) MarkFileInstanceUnhealthy(httpAddr string) {
+	if sc.fileRouter != nil {
+		sc.fileRouter.MarkUnhealthy(httpAddr)
+	}
 }
 
 func fnvHash(key string) uint32 {

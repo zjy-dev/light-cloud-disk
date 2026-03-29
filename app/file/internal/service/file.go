@@ -50,14 +50,39 @@ func (s *FileService) UploadChunk(ctx context.Context, req *pb.UploadChunkReques
 	}, nil
 }
 
-func (s *FileService) MergeChunks(ctx context.Context, req *pb.MergeChunksRequest) (*pb.MergeChunksReply, error) {
-	file, err := s.uc.MergeChunks(ctx, req.UserId, req.ParentId, req.FileName, req.FileMd5, req.FileSize, req.TotalChunks)
+func (s *FileService) CompleteUpload(ctx context.Context, req *pb.CompleteUploadRequest) (*pb.CompleteUploadReply, error) {
+	file, err := s.uc.CompleteUpload(ctx, req.UserId, req.ParentId, req.FileName, req.FileMd5, req.FileSize, req.TotalChunks)
 	if err != nil {
 		return nil, err
 	}
-	return &pb.MergeChunksReply{
+	return &pb.CompleteUploadReply{
 		Success: true,
 		File:    s.fileToProto(file),
+	}, nil
+}
+
+func (s *FileService) GetDownloadPlan(ctx context.Context, req *pb.GetDownloadPlanRequest) (*pb.GetDownloadPlanReply, error) {
+	plan, err := s.uc.GetDownloadPlan(ctx, req.UserId, req.FileId)
+	if err != nil {
+		return nil, err
+	}
+
+	chunks := make([]*pb.ChunkLocation, len(plan.Chunks))
+	for i, c := range plan.Chunks {
+		chunks[i] = &pb.ChunkLocation{
+			ChunkIndex:  c.ChunkIndex,
+			ChunkSize:   c.ChunkSize,
+			DownloadUrl: c.DownloadURL,
+			Checksum:    c.Checksum,
+		}
+	}
+
+	return &pb.GetDownloadPlanReply{
+		FileName:    plan.FileName,
+		FileMd5:     plan.FileMD5,
+		FileSize:    plan.FileSize,
+		TotalChunks: plan.TotalChunks,
+		Chunks:      chunks,
 	}, nil
 }
 

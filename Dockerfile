@@ -45,7 +45,7 @@ ENV SERVICE=${SERVICE}
 
 ENV TZ=Asia/Shanghai
 
-EXPOSE 8080 9001 9002
+EXPOSE 8080 9001 9002 9003
 
 # gateway runs directly, Kratos services (user/file) use -conf for config path
 CMD ["/bin/sh", "-c", \
